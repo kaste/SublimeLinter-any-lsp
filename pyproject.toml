@@ -1,0 +1,12 @@
+[tool.ruff.lint]
+extend-select = ["W", "E", "I"]
+ignore = ["W293"]
+
+[tool.ruff.lint.isort]
+force-sort-within-sections = true
+
+[tool.ruff.lint.pycodestyle]
+max-line-length = 100
+
+[tool.ruff.lint.per-file-ignores]
+"linter.py" = ["E402"]

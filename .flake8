@@ -1,0 +1,12 @@
+[flake8]
+max-line-length = 120
+ignore =
+    E401,
+    E731,
+    D,
+    W503,
+    W504
+exclude =
+  .svn,CVS,.bzr,.hg,.git
+per-file-ignores =
+    linter.py:E402
