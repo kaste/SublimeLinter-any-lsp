@@ -13,6 +13,7 @@ for module_name in [
 
 
 from collections import defaultdict, deque
+from concurrent.futures import Future
 import copy
 from dataclasses import dataclass, field
 from functools import partial
@@ -22,10 +23,11 @@ import os
 from pathlib import Path
 import subprocess
 import sys
+import threading
 from typing import (
     IO,
     Callable,
-    Deque,
+    Generic,
     Literal,
     Optional,
     TypedDict,
@@ -54,6 +56,18 @@ from .core.utils import Counter, run_on_new_thread, try_kill_proc, unflatten
 
 logger = logging.getLogger('SublimeLinter.plugin.lsp')
 JSON_RPC_MESSAGE = "Content-Length: {}\r\n\r\n{}"
+CLIENT_INFO = unflatten({
+    "processId": os.getpid(),
+    "clientInfo.name": "SublimeLinter",
+    "clientInfo.version": "4",
+})
+MINIMAL_CAPABILITIES = unflatten({
+    "textDocument.synchronization.didSave": True,
+    "textDocument.publishDiagnostics.relatedInformation": True,
+    "workspace.workspaceFolders": True,
+    "window.workDoneProgress": True,
+})
+max_capabilities_per_service: dict[str, dict] = {}
 _counter = Counter()
 
 
@@ -101,51 +115,67 @@ def parse_for_messages(stream: IO):
 
 
 ServerStates = Literal[
-    "INIT", "INITIALIZE_REQUESTED", "READY", "SHUTDOWN_REQUESTED", "DEAD"]
+    "INIT", "INITIALIZE_REQUESTED", "READY", "SHUTDOWN_REQUESTED", "EXIT_REQUESTED", "DEAD"]
 
 
+@dataclass
+class ServerConfig:
+    name: str
+    cmd: list[str]
+    root_dir: str | None
+    initialization_options: dict[str, object] = field(default_factory=dict)
+    settings: dict[str, object] = field(default_factory=dict)
+    capabilities: dict[str, object] = field(default_factory=lambda: MINIMAL_CAPABILITIES)
+
+    def __post_init__(self):
+        if self.capabilities is not MINIMAL_CAPABILITIES:
+            current_capabilities = max_capabilities_per_service.get(self.name, MINIMAL_CAPABILITIES)
+            next_capabilities = merge_dicts(current_capabilities, self.capabilities)
+            self.capabilities = max_capabilities_per_service[self.name] = next_capabilities
+
+    def identity(self) -> tuple[str, str | None]:
+        return (self.name, self.root_dir)
 
 
 @dataclass
 class Server:
-    name: str
+    config: ServerConfig
     reader: IO[bytes]
     writer: IO[bytes]
     killer: Callable[[], None] = lambda: None
-    state: ServerStates = "INIT"
-    messages_out_queue: Deque[Message] = deque()
-    pending_request_ids: dict[int, Callable[[Message], None]] = field(default_factory=dict)
+    state: ServerStates = field(init=False, default="INIT")
+    messages_out_queue: deque[Message] = field(default_factory=deque)
+    pending_request_ids: dict[int, Future[Message]] = field(init=False, default_factory=dict)
     handlers: set[Callable[[Server, Message], None]] = field(default_factory=set)
+
+    def __post_init__(self):
+        reader_thread = run_on_new_thread(self.reader_loop)
+        self.wait: Callable[[float], bool] = partial(join_thread, reader_thread)
+        self._writer_lock = threading.Lock()
+
+    @property
+    def name(self) -> str:
+        return self.config.name
 
     def on_message(self, handler: Callable[[Server, Message], None]) -> None:
         self.handlers.add(handler)
 
     def kill(self):
+        print("kill", self.name)
         self.killer()
 
     def reader_loop(self):
         while msg := parse_for_message(self.reader):
             if logger.isEnabledFor(logging.DEBUG):
-                logger.debug("<-", msg)
-            else:
-                try:
-                    msg["id"]
-                except KeyError:
-                    print("<--", msg)
-                else:
-                    print("<-({})--".format(msg["id"]), msg)
+                logger.debug(f"<- {msg}")
 
             try:
                 id = msg["id"]  # type: ignore[typeddict-item]
+                fut = self.pending_request_ids.pop(id)
             except KeyError:
-                ...
+                pass
             else:
-                try:
-                    callback = self.pending_request_ids.pop(id)
-                except KeyError:
-                    ...
-                else:
-                    callback(msg)
+                fut.set_result(msg)
 
             for handler in self.handlers.copy():
                 try:
@@ -157,16 +187,18 @@ class Server:
         print(f"`{self.name}`> is now dead.")
 
 
-    def request(self, message: Request, callback: Callable) -> None:
-        msg: Request = {**{"id": next_id()}, **message}
-        self.pending_request_ids[msg["id"]] = callback
+    def request(self, message: Request) -> OkFuture[Message]:
+        fut: Future[Message]
+        msg: Request = {"id": next_id(), **message}
+        self.pending_request_ids[msg["id"]] = fut = OkFuture()
         self.send(msg)
+        return fut
 
     def notify(self, method: str, params: dict = {}) -> None:
         self.send({"method": method, "params": params or {}})
 
     def write_message(self, message: Message) -> None:
-        msg: Message = {**{"jsonrpc": "2.0"}, **message}
+        msg: Message = {"jsonrpc": "2.0", **message}
 
         if logger.isEnabledFor(logging.DEBUG):
             sanitized = copy.deepcopy(msg)
@@ -182,15 +214,32 @@ class Server:
                 pass
             else:
                 sanitized["params"]["textDocument"]["text"] = "..."
-            logger.debug("->", sanitized)
+            logger.debug(f"-> {sanitized}")
 
-        self.writer.write(encode_message(msg))
-        self.writer.flush()
+        try:
+            id = msg["id"]  # type: ignore[typeddict-item]
+            fut = self.pending_request_ids[id]
+        except KeyError:
+            pass
+        else:
+            if not fut.set_running_or_notify_cancel():
+                return
 
+        msg_ = encode_message(msg)
+        with self._writer_lock:
+            self.writer.write(msg_)
+            self.writer.flush()
+
+    def in_shutdown_phase(self) -> bool:
+        return self.state in ("SHUTDOWN_REQUESTED", "EXIT_REQUESTED", "DEAD")
 
     def send(self, message: Message) -> None:
         if self.state == "DEAD":
             logger.warn("Server is already dead.")
+            return
+
+        if self.state == "EXIT_REQUESTED":
+            logger.warn("Server `exit` has already been requested")
             return
 
         if message["method"] == "initialize":
@@ -226,11 +275,11 @@ class Server:
 
         if message["method"] == "exit":
             self.write_message(message)
-            self.state = "DEAD"
+            self.state = "EXIT_REQUESTED"
             return
 
         if self.state == "SHUTDOWN_REQUESTED":
-            logger.warn("Server shutdown has already been requested")
+            logger.warn("Server `shutdown` has already been requested")
             return
 
         if self.state == "READY":
@@ -242,37 +291,25 @@ class Server:
             return
 
 
-CLIENT_INFO = unflatten({
-    "processId": os.getpid(),
-    "clientInfo.name": "SublimeLinter",
-    "clientInfo.version": "4",
-})
-MINIMAL_CAPABILITIES = unflatten({
-    "textDocument.synchronization.didSave": True,
-    "textDocument.publishDiagnostics.relatedInformation": True,
-    "workspace.workspaceFolders": True,
-    "window.workDoneProgress": True,
-})
-
-
-
-def ensure_server(name: str, cmd: list[str], root_dir: Optional[str]) -> Server:
-    return get_server(name, root_dir) or start_server(name, cmd, root_dir)
-
-
 running_servers: dict[tuple[str, Optional[str]], Server] = {}
 
 
-def get_server(name: str, root_dir: Optional[str]) -> Server | None:
-    if (server := running_servers.get((name, root_dir))) and server.state != "DEAD":
-        return server
-    return None
+def ensure_server(config: ServerConfig) -> Server:
+    if server := running_servers.get(config.identity()):
+        if server.config == config and not server.in_shutdown_phase():
+            return server
+        else:
+            shutdown_server(server)
+
+    new_server = start_server(config)
+    running_servers[config.identity()] = new_server
+    return new_server
 
 
-def start_server(name: str, cmd: list[str], root_dir: Optional[str]) -> Server:
+def start_server(config: ServerConfig) -> Server:
     proc = subprocess.Popen(
-        cmd,
-        cwd=root_dir,
+        config.cmd,
+        cwd=config.root_dir,
         stdin=subprocess.PIPE,
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
@@ -281,19 +318,20 @@ def start_server(name: str, cmd: list[str], root_dir: Optional[str]) -> Server:
     assert proc.stdin
     assert proc.stdout
     assert proc.stderr
+    run_on_new_thread(std_err_printer, config.name, proc.stderr)
+    print(f"`{config.name}`> has started.")
+
     reader = proc.stdout
     writer = proc.stdin
     killer = partial(try_kill_proc, proc)
-    server = Server(name, reader, writer, killer)
-    running_servers[(name, root_dir)] = server
-    run_on_new_thread(server.reader_loop)
-    run_on_new_thread(std_err_printer, name, proc.stderr)
+    server = Server(config, reader, writer, killer)
+
     folder_config = {
-        "rootUri": Path(root_dir).as_uri() if root_dir else None,
-        "rootPath": root_dir,
+        "rootUri": Path(config.root_dir).as_uri() if config.root_dir else None,
+        "rootPath": config.root_dir,
         "workspaceFolders": (
-            [{"name": Path(root_dir).stem, "uri": Path(root_dir).as_uri()}]
-            if root_dir else None
+            [{"name": Path(config.root_dir).stem, "uri": Path(config.root_dir).as_uri()}]
+            if config.root_dir else None
         ),
     }
     server.request({
@@ -301,10 +339,10 @@ def start_server(name: str, cmd: list[str], root_dir: Optional[str]) -> Server:
         "params": {
             **CLIENT_INFO,
             **folder_config,
-            "capabilities": MINIMAL_CAPABILITIES,
-            "initializationOptions": {},
+            "capabilities": config.capabilities,
+            "initializationOptions": config.initialization_options,
         }
-    }, lambda _: server.send({"method": "initialized", "params": {}}))
+    }).on_response(lambda _: server.notify("initialized"))
     return server
 
 
@@ -317,48 +355,52 @@ class AnyLSP(Linter):
         if cmd is None:
             raise PermanentError("`cmd` must be defined.")
 
-        # reasons: ("on_user_request", "on_save", "on_load", "on_modified")
+        initialization_options = self.settings.get("initialization_options", {})
+        if not isinstance(initialization_options, dict):
+            self.logger.error(
+                f"`initialization_options` must be a dictionary/mapping."
+                f" Got {initialization_options!r}"
+            )
+            raise PermanentError("wrong type for `initialization_options`")
+        settings = self.settings.get("settings", {})
+        if not isinstance(settings, dict):
+            self.logger.error(
+                f"`settings` must be a dictionary/mapping."
+                f" Got {settings!r}"
+            )
+            raise PermanentError("wrong type for `initialization_options`")
+
+        cwd = self.get_working_dir()
+        config = ServerConfig(
+            self.name,
+            cmd,
+            cwd,
+            initialization_options=initialization_options,
+            settings=settings
+        )
+        server = ensure_server(config)
         reason = (
             "on_modified"
-            if get_server_for_view(self.view, self.name)
+            if get_server_for_view(self.view, self.name) == server
             else "on_load"
         )
 
-        cwd = self.get_working_dir()
-        server = ensure_server(self.name, cmd, cwd)
-        server.on_message(diagnostics_handler)
-        remember_server_for_view(self.view, self.name, server)
         if reason == "on_load":
-            server.send({
-                "method": "textDocument/didOpen",
-                "params": {
-                    "textDocument": {
-                        # The text document's URI.
-                        "uri": canoncial_uri_for_view(self.view),
-                        # The text document's language identifier.
-                        "languageId": language_id_for_view(self.view),
-                        # The version number of this document (it will increase after each
-                        # change, including undo/redo).
-                        "version": self.view.change_count(),
-                        # The content of the opened text document.
-                        "text": code,
-                    }
-                }
-            })
+            server.on_message(diagnostics_handler)
+            remember_server_for_view(self.view, server)
+            server.notify("textDocument/didOpen", unflatten({
+                "textDocument.uri": canoncial_uri_for_view(self.view),
+                "textDocument.languageId": language_id_for_view(self.view),
+                "textDocument.version": self.view.change_count(),
+                "textDocument.text": code,
+            }))
 
-        elif reason in ("on_modified", "on_save"):
-            server.send({
-                "method": "textDocument/didChange",
-                "params": {
-                    "textDocument": {
-                        "uri": canoncial_uri_for_view(self.view),
-                        "version": self.view.change_count(),
-                    },
-                    "contentChanges": [{
-                        "text": code
-                    }]
-                }
-            })
+        elif reason == "on_modified":
+            server.notify("textDocument/didChange", unflatten({
+                "textDocument.uri": canoncial_uri_for_view(self.view),
+                "textDocument.version": self.view.change_count(),
+                "contentChanges": [{ "text": code }]
+            }))
 
         raise TransientError("lsp's answer on their own will.")
 
@@ -433,11 +475,19 @@ def severity_to_type(severity: str | None, default=DEFAULT_TYPE) -> str:
     }.get(severity, default)
 
 
+class Ruff(AnyLSP):
+    name = "ruff-lsp"
+    cmd = ('ruff', 'server', '--preview')
+    defaults = {
+        "selector": "source.python"
+    }
+
+
 servers_attached_per_buffer: dict[int, dict[str, Server]] = defaultdict(dict)
 
 
-def remember_server_for_view(view: sublime.View, name: str, server: Server) -> None:
-    servers_attached_per_buffer[view.buffer_id()][name] = server
+def remember_server_for_view(view: sublime.View, server: Server) -> None:
+    servers_attached_per_buffer[view.buffer_id()][server.name] = server
 
 
 def get_server_for_view(view: sublime.View, name: str) -> Server | None:
@@ -474,28 +524,83 @@ def did_close(view: sublime.View) -> None:
         server.notify("textDocument/didClose", {"uri": uri})
 
 
-def shutdown_server(server: Server) -> None:
-    def on_shutdown_response(_):
-        server.send({"method": "exit"})
-        try:
-            server.wait(0.5)
-        except TimeoutError:
-            server.kill()
-            print("kill", server.name)
+def join_popen(proc: subprocess.Popen, timeout: float) -> bool:
+    try:
+        proc.wait(timeout)
+    except TimeoutError:
+        return False
+    else:
+        return True
 
-    server.request({"method": "shutdown"}, on_shutdown_response)
+
+def join_thread(thread: threading.Thread, timeout: float) -> bool:
+    thread.join(timeout)
+    return not thread.is_alive()
+
+
+WAIT_TIME = 0.5
+
+
+def shutdown_server(server: Server) -> bool:
+    if server.in_shutdown_phase():
+        if not server.wait(WAIT_TIME):
+            server.kill()
+            return server.wait(WAIT_TIME)
+        return True
+
+    return shutdown_server_(server)
+
+
+def shutdown_server_(server: Server) -> bool:
+    cond = threading.Condition()
+
+    def on_shutdown_response(_):
+        server.notify("exit")
+        if not server.wait(WAIT_TIME):
+            server.kill()
+            if not server.wait(WAIT_TIME):
+                return
+
+        with cond:
+            cond.notify_all()
+
+    req = server.request({"method": "shutdown"})
+    req.on_response(on_shutdown_response)
+    try:
+        req.result(WAIT_TIME)
+    except TimeoutError:
+        req.cancel()
+        server.kill()
+        return server.wait(WAIT_TIME)
+
+    with cond:
+        ok = cond.wait(WAIT_TIME * 2)
+    print("shtdown in time" if ok else "shtdown too slow")
+    return ok
+
+
+
+class OkFuture(Future, Generic[T]):
+    def on_response(self, fn: Callable[[T], None]) -> None:
+        def wrapper(fut):
+            try:
+                result = fut.result()
+            except Exception:
+                pass
+            else:
+                fn(result)
+        self.add_done_callback(wrapper)
 
 
 def cleanup_servers() -> None:
     used_servers = {
-        (server.name, server.root_dir)
+        server.config.identity()
         for d in servers_attached_per_buffer.values()
         for server in d.values()
     }
-    unused_servers = running_servers.keys() - used_servers
-    for name, root_dir in unused_servers:
-        server = running_servers.get((name, root_dir))
-        shutdown_server(server)
+    for identity, server in running_servers.items():
+        if id not in used_servers:
+            shutdown_server(server)
 
 
 def language_id_for_view(view: sublime.View) -> str:
@@ -525,14 +630,6 @@ def view_for_file_name(file_name: str) -> sublime.View | None:
         if view := window.find_open_file(file_name):
             return view
     return None
-
-
-class Ruff(AnyLSP):
-    name = "ruff-lsp"
-    cmd = ('ruff', 'server', '--preview')
-    defaults = {
-        "selector": "source.python"
-    }
 
 
 def next_id() -> int:
@@ -566,6 +663,27 @@ def from_uri(uri: str) -> str:  # backport from Python 3.13
     if not path_.is_absolute():
         raise ValueError(f"URI is not absolute: {uri!r}")
     return str(path_)
+
+
+def merge_dicts(a: dict, b: dict) -> dict:
+    """Merge given dicts `a` and `b` recursively and return a new dict."""
+    c = {}
+    common_keys = a.keys() & b.keys()
+
+    for key in common_keys:
+        if isinstance(a[key], dict) and isinstance(b[key], dict):
+            c[key] = merge_dicts(a[key], b[key])
+        else:
+            # Otherwise, use the value from b
+            c[key] = copy.deepcopy(b[key])
+
+    for key in a.keys() - common_keys:
+        c[key] = copy.deepcopy(a[key])
+
+    for key in b.keys() - common_keys:
+        c[key] = copy.deepcopy(b[key])
+
+    return c
 
 
 def std_err_printer(name: str, stream: IO[bytes]) -> None:

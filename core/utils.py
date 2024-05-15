@@ -42,8 +42,10 @@ def proc_has_been_killed(proc):
     return getattr(proc, "got_killed", False)
 
 
-def run_on_new_thread(fn: Callable[P, T], *args: P.args, **kwargs: P.kwargs) -> None:
-    threading.Thread(target=fn, args=args, kwargs=kwargs).start()
+def run_on_new_thread(fn: Callable[P, T], *args: P.args, **kwargs: P.kwargs) -> threading.Thread:
+    thread = threading.Thread(target=fn, args=args, kwargs=kwargs)
+    thread.start()
+    return thread
 
 
 class Counter:
