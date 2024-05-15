@@ -410,10 +410,8 @@ def diagnostics_handler(server: Server, msg: Message) -> None:
         method = msg["method"]
     except KeyError:
         return
-    else:
-        if method != "textDocument/publishDiagnostics":
-            # print(f"skip: wrong method: {method}")
-            return
+    if method != "textDocument/publishDiagnostics":
+        return
 
     linter_name = server.name
     uri = msg["params"]["uri"]
@@ -428,16 +426,9 @@ def diagnostics_handler(server: Server, msg: Message) -> None:
         print(f"skip: view has changed. {view.change_count()} -> {version}")
         return
 
-    errors: list[persist.LintError] = [
-        {
-            **error,  # type: ignore[typeddict-item]
-            **{
-                "uid": make_error_uid(error),
-                "priority": style.get_value("priority", error, 0)
-            }
-        }
-        for diagnostic in msg["params"]["diagnostics"]
-        if (region := sublime.Region(
+    errors: list[persist.LintError] = []
+    for diagnostic in msg["params"]["diagnostics"]:
+        region = sublime.Region(
             view.text_point_utf16(
                 diagnostic["range"]["start"]["line"],
                 diagnostic["range"]["start"]["character"],
@@ -447,9 +438,9 @@ def diagnostics_handler(server: Server, msg: Message) -> None:
                 diagnostic["range"]["end"]["line"],
                 diagnostic["range"]["end"]["character"],
                 clamp_column=True
-            ),
-        )) or True
-        if (error := {
+            )
+        )
+        error: persist.LintError = {
             "linter": linter_name,
             "filename": file_name,
             "msg": diagnostic["message"],
@@ -459,11 +450,17 @@ def diagnostics_handler(server: Server, msg: Message) -> None:
             "start": diagnostic["range"]["start"]["character"],
             "region": region,
             "offending_text": view.substr(region)
+        }
+        error.update({
+            "uid": make_error_uid(error),
+            "priority": style.get_value("priority", error, 0)
         })
-    ]
-    # print("sublime_linter.update_file_errors", sublime_linter.update_file_errors)
-    # print(file_name, linter_name, errors)
-    sublime_linter.update_file_errors(file_name, linter_name, errors, reason=None)
+        errors.append(error)
+
+    # fan-in on Sublime's worker thread
+    sublime.set_timeout_async(partial(
+        sublime_linter.update_file_errors, file_name, linter_name, errors, reason=None
+    ))
 
 
 DEFAULT_TYPE = "error"
