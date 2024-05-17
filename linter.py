@@ -147,6 +147,7 @@ class Server:
     messages_out_queue: deque[Message] = field(default_factory=deque)
     pending_request_ids: dict[int, Future[Message]] = field(init=False, default_factory=dict)
     handlers: set[Callable[[Server, Message], None]] = field(default_factory=set)
+    capabilities: dict[str, object] = field(init=False, default_factory=dict)
 
     def __post_init__(self):
         reader_thread = run_on_new_thread(self.reader_loop)
@@ -334,7 +335,7 @@ def start_server(config: ServerConfig) -> Server:
             if config.root_dir else None
         ),
     }
-    server.request({
+    req = server.request({
         "method": "initialize",
         "params": {
             **CLIENT_INFO,
@@ -342,7 +343,16 @@ def start_server(config: ServerConfig) -> Server:
             "capabilities": config.capabilities,
             "initializationOptions": config.initialization_options,
         }
-    }).on_response(lambda _: server.notify("initialized"))
+    })
+
+    @req.on_response
+    def on_initialize_response(msg):
+        try:
+            server.capabilities = msg["result"]["capabilities"]
+        except KeyError:
+            pass
+        server.notify("initialized")
+
     return server
 
 
