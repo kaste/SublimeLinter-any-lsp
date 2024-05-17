@@ -574,7 +574,7 @@ def shutdown_server_(server: Server) -> bool:
     req = server.request({"method": "shutdown"})
     req.on_response(on_shutdown_response)
     try:
-        req.result(WAIT_TIME)
+        req.wait(WAIT_TIME)
     except TimeoutError:
         req.cancel()
         server.kill()
@@ -597,6 +597,15 @@ class OkFuture(Future, Generic[T]):
             else:
                 fn(result)
         self.add_done_callback(wrapper)
+
+    def wait(self, timeout: float) -> None:
+        """Wait for the result; only ever raise TimeoutError"""
+        try:
+            self.result(timeout)
+        except TimeoutError:
+            raise
+        except Exception:
+            pass
 
 
 def cleanup_servers() -> None:
