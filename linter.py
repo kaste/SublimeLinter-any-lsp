@@ -63,7 +63,13 @@ CLIENT_INFO = unflatten({
 })
 MINIMAL_CAPABILITIES = unflatten({
     "textDocument.synchronization.didSave": True,
+    "textDocument.publishDiagnostics.codeDescriptionSupport": True,
+    "textDocument.publishDiagnostics.dataSupport": True,
     "textDocument.publishDiagnostics.relatedInformation": True,
+    "textDocument.publishDiagnostics.tagSupport.valueSet": [1, 2],
+    "textDocument.publishDiagnostics.versionSupport": True,
+    "workspace.configuration": True,
+    "workspace.didChangeConfiguration.dynamicRegistration": True,
     "workspace.workspaceFolders": True,
     "window.workDoneProgress": True,
 })
