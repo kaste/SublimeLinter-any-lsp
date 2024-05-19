@@ -16,7 +16,8 @@ from collections import defaultdict, deque
 from concurrent.futures import Future
 import copy
 from dataclasses import dataclass, field
-from functools import partial
+from functools import partial, wraps
+import inspect
 import json
 import logging
 import os
@@ -34,9 +35,11 @@ from typing import (
     TypeVar,
 )
 
-from typing_extensions import NotRequired
+from typing_extensions import NotRequired, ParamSpec
 
+P = ParamSpec('P')
 T = TypeVar('T')
+Callback = Callable[["Message"], None]
 
 
 import sublime
@@ -56,6 +59,7 @@ from .core.utils import Counter, run_on_new_thread, try_kill_proc, unflatten
 
 logger = logging.getLogger('SublimeLinter.plugin.lsp')
 JSON_RPC_MESSAGE = "Content-Length: {}\r\n\r\n{}"
+DEFAULT_ERROR_TYPE = "error"
 CLIENT_INFO = unflatten({
     "processId": os.getpid(),
     "clientInfo.name": "SublimeLinter",
@@ -152,7 +156,7 @@ class Server:
     state: ServerStates = field(init=False, default="INIT")
     messages_out_queue: deque[Message] = field(default_factory=deque)
     pending_request_ids: dict[int, Future[Message]] = field(init=False, default_factory=dict)
-    handlers: set[Callable[[Server, Message], None]] = field(default_factory=set)
+    handlers: dict[str, Callback] = field(default_factory=dict)
     capabilities: dict[str, object] = field(init=False, default_factory=dict)
 
     def __post_init__(self):
@@ -164,8 +168,17 @@ class Server:
     def name(self) -> str:
         return self.config.name
 
-    def on_message(self, handler: Callable[[Server, Message], None]) -> None:
-        self.handlers.add(handler)
+    def add_listener(self, handler: Callback | dict[str, Callback]) -> None:
+        if isinstance(handler, dict):
+            self.handlers.update(handler)
+        else:
+            for frame in inspect.stack()[1:]:
+                key = ":".join((frame.filename, str(frame.lineno), frame.function))
+                break
+            else:
+                print(f"can't determine a key for {handler}")
+                return
+            self.handlers[key] = handler
 
     def kill(self):
         print("kill", self.name)
@@ -184,9 +197,9 @@ class Server:
             else:
                 fut.set_result(msg)
 
-            for handler in self.handlers.copy():
+            for handler in self.handlers.values():
                 try:
-                    handler(self, msg)
+                    handler(msg)
                 except Exception as e:
                     print(f"{handler} raised {e!r}")
 
@@ -305,15 +318,19 @@ def ensure_server(config: ServerConfig) -> Server:
     if server := running_servers.get(config.identity()):
         if server.config == config and not server.in_shutdown_phase():
             return server
-        else:
-            shutdown_server(server)
 
-    new_server = start_server(config)
+        handlers = server.handlers.copy()
+        shutdown_server(server)
+
+    else:
+        handlers = {}
+
+    new_server = start_server(config, handlers)
     running_servers[config.identity()] = new_server
     return new_server
 
 
-def start_server(config: ServerConfig) -> Server:
+def start_server(config: ServerConfig, handlers: dict[str, Callback]) -> Server:
     proc = subprocess.Popen(
         config.cmd,
         cwd=config.root_dir,
@@ -331,7 +348,7 @@ def start_server(config: ServerConfig) -> Server:
     reader = proc.stdout
     writer = proc.stdin
     killer = partial(try_kill_proc, proc)
-    server = Server(config, reader, writer, killer)
+    server = Server(config, reader, writer, killer, handlers=handlers)
 
     folder_config = {
         "rootUri": Path(config.root_dir).as_uri() if config.root_dir else None,
@@ -402,7 +419,9 @@ class AnyLSP(Linter):
         )
 
         if reason == "on_load":
-            server.on_message(diagnostics_handler)
+            server.add_listener(
+                partial(diagnostics_handler, server, default_error_type=self.default_type)
+            )
             remember_server_for_view(self.view, server)
             server.notify("textDocument/didOpen", unflatten({
                 "textDocument.uri": canoncial_uri_for_view(self.view),
@@ -421,14 +440,34 @@ class AnyLSP(Linter):
         raise TransientError("lsp's answer on their own will.")
 
 
-def diagnostics_handler(server: Server, msg: Message) -> None:
+def handles(**kwargs) -> Callable[[Callable[P, None]], Callable[P, None]]:
     try:
-        method = msg["method"]
-    except KeyError:
-        return
-    if method != "textDocument/publishDiagnostics":
-        return
+        msg_arg_name = next(iter(kwargs.keys()))
+    except StopIteration:
+        raise TypeError("can't figure out the argument name of the message")
 
+    wanted_method = kwargs[msg_arg_name]
+
+    def decorator(fn: Callable[P, None]) -> Callable[P, None]:
+        sig = inspect.signature(fn)
+
+        @wraps(fn)
+        def wrapped(*args: P.args, **kwargs: P.kwargs) -> None:
+            bound = sig.bind(*args, **kwargs)
+            msg = bound.arguments[msg_arg_name]
+            if msg.get("method") == wanted_method:
+                return fn(*args, **kwargs)
+            else:
+                print("skip--------")
+                return None
+        return wrapped
+    return decorator
+
+
+@handles(msg="textDocument/publishDiagnostics")
+def diagnostics_handler(server: Server, msg: Message, default_error_type: str = "error") -> None:
+    print("diagnostics_handler--")
+    # print("msg", msg)
     linter_name = server.name
     uri = msg["params"]["uri"]
     file_name = canonical_name_from_uri(uri)
@@ -461,7 +500,7 @@ def diagnostics_handler(server: Server, msg: Message) -> None:
             "filename": file_name,
             "msg": diagnostic["message"],
             "code": diagnostic.get("code", ""),
-            "error_type": severity_to_type(diagnostic.get("severity")),
+            "error_type": severity_to_type(diagnostic.get("severity"), default=default_error_type),
             "line": diagnostic["range"]["start"]["line"],
             "start": diagnostic["range"]["start"]["character"],
             "region": region,
@@ -479,12 +518,9 @@ def diagnostics_handler(server: Server, msg: Message) -> None:
     ))
 
 
-DEFAULT_TYPE = "error"
-
-
-def severity_to_type(severity: str | None, default=DEFAULT_TYPE) -> str:
-    return {  # type: ignore[call-overload]
-        1: "error", 2: "warning", 3: "info", 4: "hint"
+def severity_to_type(severity: int | None, default=DEFAULT_ERROR_TYPE) -> str:
+    return {
+        1: "error", 2: "warning", 3: "info", 4: "hint", None: default
     }.get(severity, default)
 
 
