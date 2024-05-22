@@ -153,13 +153,15 @@ class Server:
     reader: IO[bytes]
     writer: IO[bytes]
     killer: Callable[[], None] = lambda: None
+    handlers: dict[str, Callback] = field(default_factory=dict)
+
     state: ServerStates = field(init=False, default="INIT")
     messages_out_queue: deque[Message] = field(init=False, default_factory=deque)
     pending_request_ids: dict[int, Future[Message]] = field(init=False, default_factory=dict)
-    handlers: dict[str, Callback] = field(default_factory=dict)
     capabilities: dict[str, object] = field(init=False, default_factory=dict)
 
     def __post_init__(self):
+        self.handlers = self.handlers.copy()
         reader_thread = run_on_new_thread(self.reader_loop)
         self.wait: Callable[[float], bool] = partial(join_thread, reader_thread)
         self._writer_lock = threading.Lock()
@@ -320,7 +322,7 @@ def ensure_server(config: ServerConfig) -> Server:
         if server.config == config and not server.in_shutdown_phase():
             return server
 
-        handlers = server.handlers.copy()
+        handlers = server.handlers
         shutdown_server(server)
 
     else:
@@ -331,7 +333,7 @@ def ensure_server(config: ServerConfig) -> Server:
     return new_server
 
 
-def start_server(config: ServerConfig, handlers: dict[str, Callback]) -> Server:
+def start_server(config: ServerConfig, handlers: dict[str, Callback] = {}) -> Server:
     proc = subprocess.Popen(
         config.cmd,
         cwd=config.root_dir,
@@ -349,7 +351,7 @@ def start_server(config: ServerConfig, handlers: dict[str, Callback]) -> Server:
     reader = proc.stdout
     writer = proc.stdin
     killer = partial(try_kill_proc, proc)
-    server = Server(config, reader, writer, killer, handlers=handlers)
+    server = Server(config, reader, writer, killer, handlers)
 
     folder_config = {
         "rootUri": Path(config.root_dir).as_uri() if config.root_dir else None,
