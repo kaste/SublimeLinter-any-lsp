@@ -154,7 +154,7 @@ class Server:
     writer: IO[bytes]
     killer: Callable[[], None] = lambda: None
     state: ServerStates = field(init=False, default="INIT")
-    messages_out_queue: deque[Message] = field(default_factory=deque)
+    messages_out_queue: deque[Message] = field(init=False, default_factory=deque)
     pending_request_ids: dict[int, Future[Message]] = field(init=False, default_factory=dict)
     handlers: dict[str, Callback] = field(default_factory=dict)
     capabilities: dict[str, object] = field(init=False, default_factory=dict)
