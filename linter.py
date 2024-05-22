@@ -216,7 +216,7 @@ class Server:
         return fut
 
     def notify(self, method: str, params: dict = {}) -> None:
-        self.send({"method": method, "params": params or {}})
+        self.send({"method": method, "params": params.copy()})
 
     def write_message(self, message: Message) -> None:
         msg: Message = {"jsonrpc": "2.0", **message}
