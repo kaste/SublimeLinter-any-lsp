@@ -467,10 +467,8 @@ def handles(**kwargs) -> Callable[[Callable[P, None]], Callable[P, None]]:
             bound = sig.bind(*args, **kwargs)
             msg = bound.arguments[msg_arg_name]
             if msg.get("method") == wanted_method:
-                return fn(*args, **kwargs)
-            else:
-                print("skip--------")
-                return None
+                fn(*args, **kwargs)
+
         return wrapped
     return decorator
 
