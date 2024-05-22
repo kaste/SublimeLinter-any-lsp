@@ -29,6 +29,7 @@ from typing import (
     IO,
     Callable,
     Generic,
+    Iterator,
     Literal,
     Optional,
     TypedDict,
@@ -54,6 +55,16 @@ from SublimeLinter.lint import (
     util,
 )
 from SublimeLinter.lint.backend import make_error_uid
+from SublimeLinter.lint.quick_fix import (
+    QuickAction,
+    TextRange,
+    add_at_eol,
+    extend_existing_comment,
+    ignore_rules_inline,
+    line_error_is_on,
+    merge_actions_by_code_and_line,
+    quick_actions_for,
+)
 
 from .core.utils import Counter, run_on_new_thread, try_kill_proc, unflatten
 
@@ -506,6 +517,8 @@ def diagnostics_handler(server: Server, msg: Message, default_error_type: str = 
             "region": region,
             "offending_text": view.substr(region)
         }
+        if "data" in diagnostic:
+            error["data"] = diagnostic["data"]  # type: ignore[typeddict-unknown-key]
         error.update({
             "uid": make_error_uid(error),
             "priority": style.get_value("priority", error, 0)
@@ -524,12 +537,95 @@ def severity_to_type(severity: int | None, default=DEFAULT_ERROR_TYPE) -> str:
     }.get(severity, default)
 
 
+
+RUFF_NAME = "ruff-lsp"
+
+
 class Ruff(AnyLSP):
-    name = "ruff-lsp"
+    name = RUFF_NAME
     cmd = ('ruff', 'server', '--preview')
     defaults = {
         "selector": "source.python"
     }
+
+
+@ignore_rules_inline(RUFF_NAME, except_for={
+    # some indentation rules are not stylistic in python
+    # the following violations cannot be ignored
+    "E112",  # expected an indented block
+    "E113",  # unexpected indentation
+    "E116",  # unexpected indentation (comment)
+    "E901",  # SyntaxError or IndentationError
+    "E902",  # IOError
+    "E999",  # SyntaxError
+    "F722",  # syntax error in forward annotation
+})
+def ignore_ruff_code(error, view):
+    # type: (persist.LintError, sublime.View) -> Iterator[TextRange]
+    line = line_error_is_on(view, error)
+    code = error["code"]
+    yield (
+        extend_existing_comment(
+            r"(?i)# noqa:[\s]?(?P<codes>[A-Z]+[0-9]+((?:,\s?)[A-Z]+[0-9]+)*)",
+            ", ",
+            {code},
+            line
+        )
+        or add_at_eol(
+            "  # noqa: {}".format(code),
+            line
+        )
+    )
+
+
+@quick_actions_for(RUFF_NAME)
+def ruff_fixes_provider(errors, _view):
+    # type: (list[persist.LintError], Optional[sublime.View]) -> Iterator[QuickAction]
+    def make_action(error):
+        # type: (persist.LintError) -> QuickAction
+        return QuickAction(
+            f"{RUFF_NAME}: {{data[kind][suggestion]}}".format(**error),
+            partial(ruff_fix_error, error),
+            "{msg}".format(**error),
+            solves=[error]
+        )
+
+    def except_(error):
+        return "data" not in error
+    yield from merge_actions_by_code_and_line(make_action, except_, errors, _view)
+
+
+def ruff_fix_error(error, view) -> Iterator[TextRange]:
+    """
+    "data":{
+       "code":"I001",
+       "fix":{
+          "applicability":"safe",
+          "edits":[
+             {
+                "content":"...",
+                "range":[
+                   300,
+                   729
+                ]
+             }
+          ],
+          "isolation_level":"NonOverlapping"
+       },
+       "kind":{
+          "body":"Import block is un-sorted or un-formatted",
+          "name":"UnsortedImports",
+          "suggestion":"Organize imports"
+       }
+    },
+
+    """
+    fix_description = error["data"]["fix"]
+    for edit in fix_description["edits"]:
+        region = sublime.Region(
+            *edit["range"]
+        )
+        yield TextRange(edit["content"] or "", region)
 
 
 servers_attached_per_buffer: dict[int, dict[str, Server]] = defaultdict(dict)
