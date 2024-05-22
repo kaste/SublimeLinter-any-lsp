@@ -207,10 +207,11 @@ class Server:
         print(f"`{self.name}`> is now dead.")
 
 
-    def request(self, message: Request) -> OkFuture[Message]:
+    def request(self, method: str, params: dict = {}) -> OkFuture[Message]:
         fut: Future[Message]
-        msg: Request = {"id": next_id(), **message}
-        self.pending_request_ids[msg["id"]] = fut = OkFuture()
+        id = next_id()
+        msg: Request = {"id": id, "method": method, "params": params.copy()}
+        self.pending_request_ids[id] = fut = OkFuture()
         self.send(msg)
         return fut
 
@@ -358,14 +359,11 @@ def start_server(config: ServerConfig, handlers: dict[str, Callback]) -> Server:
             if config.root_dir else None
         ),
     }
-    req = server.request({
-        "method": "initialize",
-        "params": {
-            **CLIENT_INFO,
-            **folder_config,
-            "capabilities": config.capabilities,
-            "initializationOptions": config.initialization_options,
-        }
+    req = server.request("initialize", {
+        **CLIENT_INFO,
+        **folder_config,
+        "capabilities": config.capabilities,
+        "initializationOptions": config.initialization_options,
     })
 
     @req.on_response
@@ -613,7 +611,7 @@ def shutdown_server_(server: Server) -> bool:
         with cond:
             cond.notify_all()
 
-    req = server.request({"method": "shutdown"})
+    req = server.request("shutdown")
     req.on_response(on_shutdown_response)
     try:
         req.wait(WAIT_TIME)
