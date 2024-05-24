@@ -211,7 +211,7 @@ class Server:
 
     def reader_loop(self):
         while msg := parse_for_message(self.reader):
-            # print(f"<- {msg}")
+            # print(f"{self.name} <- {msg}")
             if self.logger.isEnabledFor(logging.DEBUG):
                 self.logger.debug(f"<- {msg}")
 
@@ -420,8 +420,6 @@ class AnyLSP(Linter):
     __abstract__ = True
 
     def run(self, cmd: list[str] | None, code: str):
-        if self.view.file_name() != __file__:
-            raise PermanentError("only for this file.")
         if cmd is None:
             raise PermanentError("`cmd` must be defined.")
 
@@ -644,6 +642,36 @@ class Pyright(AnyLSP):
         }
     }
 
+
+class Eslint(AnyLSP):
+    name = "eslint-lsp"
+    cmd = ('vscode-eslint-language-server', '--stdio')
+    defaults = {
+        "env": {"DEBUG": "eslint:*,-eslint:code-path"},
+        # "disable": True,
+        "selector": "source.js",
+        "settings": unflatten({
+            'validate': 'on',
+            'packageManager': None,
+            'useESLintClass': False,
+            'experimental.useFlatConfig': False,
+            # 'codeActionOnSave.enable': False,
+            # 'codeActionOnSave.mode': 'all',
+            'format': False,
+            'quiet': False,
+            "ignoreUntitled": False,
+            "onIgnoredFiles": "off",
+            'rulesCustomizations': [],
+            'run': 'onType',
+            'problems.shortenToSingleLine': False,
+            'nodePath': None,
+            'workingDirectory.mode': 'location',
+            'codeAction.disableRuleComment.enable': True,
+            'codeAction.disableRuleComment.location': 'separateLine',
+            "codeAction.disableRuleComment.commentStyle": "line",
+            # 'codeAction.showDocumentation.enable': True,
+        })
+    }
 
 @ignore_rules_inline(RUFF_NAME, except_for={
     # some indentation rules are not stylistic in python
