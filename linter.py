@@ -596,7 +596,22 @@ class Ruff(AnyLSP):
     name = RUFF_NAME
     cmd = ('ruff', 'server', '--preview')
     defaults = {
-        "selector": "source.python"
+        # "disable": True,
+        "selector": "source.python",
+    }
+
+
+class Pyright(AnyLSP):
+    name = "pyright-lsp"
+    cmd = ("pyright-langserver", "--stdio")
+    defaults = {
+        "disable": True,
+        "selector": "source.python",
+        "settings": {
+            "python.analysis.autoSearchPaths": True,
+            "python.analysis.diagnosticMode": "openFilesOnly",
+            "python.analysis.useLibraryCodeForTypes": True,
+        }
     }
 
 
