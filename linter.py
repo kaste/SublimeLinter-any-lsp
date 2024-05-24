@@ -684,7 +684,7 @@ def ruff_fixes_provider(errors, _view):
         )
 
     def except_(error):
-        return "data" not in error
+        return read_path(error, "data.fix") is None
     yield from merge_actions_by_code_and_line(make_action, except_, errors, _view)
 
 
