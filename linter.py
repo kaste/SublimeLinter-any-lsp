@@ -25,6 +25,7 @@ from pathlib import Path
 import subprocess
 import sys
 import threading
+import traceback
 from typing import (
     IO,
     Callable,
@@ -176,6 +177,7 @@ class Server:
         reader_thread = run_on_new_thread(self.reader_loop)
         self.wait: Callable[[float], bool] = partial(join_thread, reader_thread)
         self._writer_lock = threading.Lock()
+        self.logger = logging.getLogger(f"SublimeLinter.plugin.{self.name}")
 
     @property
     def name(self) -> str:
@@ -194,13 +196,14 @@ class Server:
             self.handlers[key] = handler
 
     def kill(self):
-        print("kill", self.name)
+        self.logger.info("SIGKILL")
         self.killer()
 
     def reader_loop(self):
         while msg := parse_for_message(self.reader):
-            if logger.isEnabledFor(logging.DEBUG):
-                logger.debug(f"<- {msg}")
+            # print(f"<- {msg}")
+            if self.logger.isEnabledFor(logging.DEBUG):
+                self.logger.debug(f"<- {msg}")
 
             try:
                 id = msg["id"]  # type: ignore[typeddict-item]
@@ -213,11 +216,11 @@ class Server:
             for handler in self.handlers.values():
                 try:
                     handler(msg)
-                except Exception as e:
-                    print(f"{handler} raised {e!r}")
+                except Exception:
+                    traceback.print_exc()
 
         self.state = "DEAD"
-        print(f"`{self.name}`> is now dead.")
+        self.logger.info(f"`{self.name}`> is now dead.")
 
 
     def request(self, method: str, params: dict = {}) -> OkFuture[Message]:
@@ -234,7 +237,7 @@ class Server:
     def write_message(self, message: Message) -> None:
         msg: Message = {"jsonrpc": "2.0", **message}
 
-        if logger.isEnabledFor(logging.DEBUG):
+        if self.logger.isEnabledFor(logging.DEBUG):
             sanitized = copy.deepcopy(msg)
             try:
                 msg["params"]["contentChanges"][0]["text"]
@@ -248,7 +251,7 @@ class Server:
                 pass
             else:
                 sanitized["params"]["textDocument"]["text"] = "..."
-            logger.debug(f"-> {sanitized}")
+            self.logger.debug(f"-> {sanitized}")
 
         try:
             id = msg["id"]  # type: ignore[typeddict-item]
@@ -268,12 +271,13 @@ class Server:
         return self.state in ("SHUTDOWN_REQUESTED", "EXIT_REQUESTED", "DEAD")
 
     def send(self, message: Message) -> None:
+        # print("send message:", message)
         if self.state == "DEAD":
-            logger.warn("Server is already dead.")
+            self.logger.warn("Server is already dead.")
             return
 
         if self.state == "EXIT_REQUESTED":
-            logger.warn("Server `exit` has already been requested")
+            self.logger.warn("Server `exit` has already been requested")
             return
 
         if message["method"] == "initialize":
@@ -281,7 +285,7 @@ class Server:
                 self.write_message(message)
                 self.state = "INITIALIZE_REQUESTED"
             else:
-                logger.warn("`initialize` only valid in INIT state")
+                self.logger.warn("`initialize` only valid in INIT state")
             return
 
         if message["method"] == "initialized":
@@ -296,7 +300,7 @@ class Server:
                     else:
                         self.send(m)
             else:
-                logger.warn("`initialized` only valid in INITIALIZE_REQUESTED state")
+                self.logger.warn("`initialized` only valid in INITIALIZE_REQUESTED state")
             return
 
         if message["method"] == "shutdown":
@@ -304,7 +308,7 @@ class Server:
                 self.write_message(message)
                 self.state = "SHUTDOWN_REQUESTED"
             else:
-                logger.warn("`shutdown` only valid in READY state")
+                self.logger.warn("`shutdown` only valid in READY state")
             return
 
         if message["method"] == "exit":
@@ -313,7 +317,7 @@ class Server:
             return
 
         if self.state == "SHUTDOWN_REQUESTED":
-            logger.warn("Server `shutdown` has already been requested")
+            self.logger.warn("Server `shutdown` has already been requested")
             return
 
         if self.state == "READY":
@@ -356,13 +360,14 @@ def start_server(config: ServerConfig, handlers: dict[str, Callback] = {}) -> Se
     assert proc.stdin
     assert proc.stdout
     assert proc.stderr
-    run_on_new_thread(std_err_printer, config.name, proc.stderr)
-    print(f"`{config.name}`> has started.")
+    run_on_new_thread(std_err_printer, logger, proc.stderr)
+    logger.info(f"`{config.name}`> has started.")
 
     reader = proc.stdout
     writer = proc.stdin
     killer = partial(try_kill_proc, proc)
     server = Server(config, reader, writer, killer, handlers)
+    server.add_listener(partial(on_log_message, server))
 
     folder_config = {
         "rootUri": Path(config.root_dir).as_uri() if config.root_dir else None,
@@ -381,6 +386,7 @@ def start_server(config: ServerConfig, handlers: dict[str, Callback] = {}) -> Se
 
     @req.on_response
     def on_initialize_response(msg):
+        # print("msg capabilities", msg)
         try:
             server.capabilities = msg["result"]["capabilities"]
         except KeyError:
@@ -473,21 +479,39 @@ def handles(**kwargs) -> Callable[[Callable[P, None]], Callable[P, None]]:
     return decorator
 
 
+@handles(msg="window/logMessage")
+def on_log_message(server: Server, msg: Notification) -> None:
+    server.logger.log(
+        translate_log_severity(msg["params"]["type"]),
+        msg["params"]["message"]
+    )
+
+
+def translate_log_severity(type: int) -> int:
+    return {
+        1: logging.ERROR,
+        2: logging.WARNING,
+        3: logging.INFO,
+        4: logging.DEBUG
+    }.get(type, logging.WARNING)
+
+
 @handles(msg="textDocument/publishDiagnostics")
 def diagnostics_handler(server: Server, msg: Message, default_error_type: str = "error") -> None:
-    print("diagnostics_handler--")
+    # print("diagnostics_handler--")
     # print("msg", msg)
     linter_name = server.name
     uri = msg["params"]["uri"]
     file_name = canonical_name_from_uri(uri)
     view = view_for_file_name(file_name)
     if not view:
-        print(f"skip: no view for {file_name}")
+        server.logger.info(f"skip: no view for {file_name}")
         return
+    # print("canoncial_uri_for_view", file_name, view.file_name())
 
     version = msg["params"]["version"]
     if view.change_count() != version:
-        print(f"skip: view has changed. {view.change_count()} -> {version}")
+        server.logger.info(f"skip: view has changed. {view.change_count()} -> {version}")
         return
 
     errors: list[persist.LintError] = []
@@ -523,6 +547,7 @@ def diagnostics_handler(server: Server, msg: Message, default_error_type: str = 
         })
         errors.append(error)
 
+    # print("out:", errors)
     # fan-in on Sublime's worker thread
     sublime.set_timeout_async(partial(
         sublime_linter.update_file_errors, file_name, linter_name, errors, reason=None
@@ -640,7 +665,6 @@ def get_server_for_view(view: sublime.View, name: str) -> Server | None:
 class DocumentListener(sublime_plugin.EventListener):
     def on_close(self, view: sublime.View) -> None:
         if view.clones():
-            print(f"{view} has still clones")
             return
 
         did_close(view)
@@ -654,7 +678,6 @@ class DocumentListener(sublime_plugin.EventListener):
     def on_exit(self) -> None:
         for (cmd, root_dir), server in running_servers.items():
             server.kill()
-            print(f"killed: {server.name}")
 
 
     def on_load(self, view):
@@ -718,7 +741,7 @@ def shutdown_server_(server: Server) -> bool:
 
     with cond:
         ok = cond.wait(WAIT_TIME * 2)
-    print("shtdown in time" if ok else "shtdown too slow")
+    server.logger.info("shtdown in time" if ok else "shtdown too slow")
     return ok
 
 
@@ -838,9 +861,9 @@ def merge_dicts(a: dict, b: dict) -> dict:
     return c
 
 
-def std_err_printer(name: str, stream: IO[bytes]) -> None:
+def std_err_printer(logger: logging.Logger, stream: IO[bytes]) -> None:
     for line in stream:
-        print(f"<{name}>", line.decode('utf-8', 'replace').rstrip())
+        logger.info(line.decode('utf-8', 'replace').rstrip())
 
 
 def plugin_loaded():
@@ -848,6 +871,5 @@ def plugin_loaded():
 
 
 def plugin_unloaded():
-    for (cmd, root_dir), server in running_servers.items():
+    for server in running_servers.values():
         server.kill()
-        print("SIGKILL", server.name)
