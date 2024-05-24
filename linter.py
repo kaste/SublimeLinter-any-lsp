@@ -67,7 +67,7 @@ from SublimeLinter.lint.quick_fix import (
     quick_actions_for,
 )
 
-from .core.utils import Counter, run_on_new_thread, try_kill_proc, unflatten
+from .core.utils import Counter, read_path, run_on_new_thread, try_kill_proc, unflatten
 
 logger = logging.getLogger('SublimeLinter.plugin.lsp')
 JSON_RPC_MESSAGE = "Content-Length: {}\r\n\r\n{}"
@@ -78,6 +78,8 @@ CLIENT_INFO = unflatten({
     "clientInfo.version": "4",
 })
 MINIMAL_CAPABILITIES = unflatten({
+    "textDocument.diagnostic.dynamicRegistration": True,
+    "textDocument.diagnostic.relatedDocumentSupport": True,
     "textDocument.publishDiagnostics.codeDescriptionSupport": True,
     "textDocument.publishDiagnostics.dataSupport": True,
     "textDocument.publishDiagnostics.relatedInformation": True,
@@ -187,6 +189,9 @@ class Server:
     @property
     def name(self) -> str:
         return self.config.name
+
+    def has_capability(self, path: str) -> bool:
+        return bool(read_path(self.capabilities, path))
 
     def add_listener(self, handler: Callback | dict[str, Callback]) -> None:
         if isinstance(handler, dict):
@@ -471,6 +476,22 @@ class AnyLSP(Linter):
                 "contentChanges": [{ "text": code }]
             }))
 
+        if server.has_capability("diagnosticProvider"):
+            req = server.request("textDocument/diagnostic", unflatten({
+                "textDocument.uri": canoncial_uri_for_view(self.view),
+            }))
+
+            @req.on_response
+            def on_diagnostics(msg):
+                print("on_diagnostics", self.name)
+                try:
+                    items = msg["result"]["items"]
+                except KeyError:
+                    pass
+                else:
+                    read_out_and_broadcast_errors(
+                        self.name, self.view, items, self.default_type)
+
         raise TransientError("lsp's answer on their own will.")
 
 
@@ -526,6 +547,7 @@ def on_workspace_configuration(server: Server, msg: Request) -> None:
 
 @handles(msg="textDocument/publishDiagnostics")
 def diagnostics_handler(server: Server, msg: Message, default_error_type: str = "error") -> None:
+    print("diagnostics_handler", server.name)
     # print("diagnostics_handler--")
     # print("msg", msg)
     linter_name = server.name
@@ -542,8 +564,13 @@ def diagnostics_handler(server: Server, msg: Message, default_error_type: str = 
         server.logger.info(f"skip: view has changed. {view.change_count()} -> {version}")
         return
 
+    read_out_and_broadcast_errors(linter_name, view, msg["params"]["diagnostics"], default_error_type)
+
+
+def read_out_and_broadcast_errors(linter_name: str, view: sublime.View, items: dict, default_error_type: str):
+    file_name = util.canonical_filename(view)
     errors: list[persist.LintError] = []
-    for diagnostic in msg["params"]["diagnostics"]:
+    for diagnostic in items:
         region = sublime.Region(
             view.text_point_utf16(
                 diagnostic["range"]["start"]["line"],

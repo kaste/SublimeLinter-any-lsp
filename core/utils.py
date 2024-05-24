@@ -79,3 +79,12 @@ def unflatten(d: dict) -> dict:
     return rv
 
 
+def read_path(d: dict, path: str) -> object:
+    parts = path.split(".")
+    edge = d
+    for part in parts:
+        edge = edge.get(part, None)
+        if edge is None:
+            return None  # type: ignore[unreachable]
+    return edge
+
