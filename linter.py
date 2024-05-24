@@ -340,6 +340,8 @@ class Server:
 
 
 running_servers: dict[tuple[str, Optional[str]], Server] = {}
+locks: dict[tuple[str, str | None], threading.Lock] = defaultdict(lambda: threading.Lock())
+
 
 
 def ensure_server(config: ServerConfig) -> Server:
@@ -441,18 +443,20 @@ class AnyLSP(Linter):
             initialization_options=initialization_options,
             settings=settings
         )
-        server = ensure_server(config)
-        reason = (
-            "on_modified"
-            if get_server_for_view(self.view, self.name) == server
-            else "on_load"
-        )
+        with locks[config.identity()]:
+            server = ensure_server(config)
+            reason = (
+                "on_modified"
+                if get_server_for_view(self.view, self.name) == server
+                else "on_load"
+            )
+            if reason == "on_load":
+                remember_server_for_view(self.view, server)
+                server.add_listener(
+                    partial(diagnostics_handler, server, default_error_type=self.default_type)
+                )
 
         if reason == "on_load":
-            server.add_listener(
-                partial(diagnostics_handler, server, default_error_type=self.default_type)
-            )
-            remember_server_for_view(self.view, server)
             server.notify("textDocument/didOpen", unflatten({
                 "textDocument.uri": canoncial_uri_for_view(self.view),
                 "textDocument.languageId": language_id_for_view(self.view),
@@ -840,11 +844,13 @@ def to_uri(path: str) -> str:
     return Path(path).as_uri()
 
 
-def from_uri(uri: str) -> str:  # backport from Python 3.13
+def from_uri(uri: str) -> str:  # roughly taken from Python 3.13
     """Return a new path from the given 'file' URI."""
+    from urllib.parse import unquote_to_bytes
     if not uri.startswith('file:'):
         raise ValueError(f"URI does not start with 'file:': {uri!r}")
-    path = uri[5:]
+    path = os.fsdecode(unquote_to_bytes(uri))
+    path = path[5:]
     if path[:3] == '///':
         # Remove empty authority
         path = path[2:]
@@ -854,13 +860,13 @@ def from_uri(uri: str) -> str:  # backport from Python 3.13
     if path[:3] == '///' or (path[:1] == '/' and path[2:3] in ':|'):
         # Remove slash before DOS device/UNC path
         path = path[1:]
+        path = path[0].upper() + path[1:]
     if path[1:2] == '|':
         # Replace bar with colon in DOS drive
         path = path[:1] + ':' + path[2:]
-    from urllib.parse import unquote_to_bytes
-    path_ = Path(os.fsdecode(unquote_to_bytes(path)))
+    path_ = Path(path)
     if not path_.is_absolute():
-        raise ValueError(f"URI is not absolute: {uri!r}")
+        raise ValueError(f"URI is not absolute: {uri!r}.  Parsed so far: {path_!r}")
     return str(path_)
 
 
