@@ -110,7 +110,7 @@ class Request(Message):
 
 class Response(Message):
     id: int
-    result: NotRequired[dict]
+    result: NotRequired[object]
 
 
 def encode_message(msg: Message) -> bytes:
@@ -241,8 +241,8 @@ class Server:
         self.send(msg)
         return fut
 
-    def respond(self, id: int, result: dict = {}):
-        msg: Response = {"id": id, "result": result.copy()}
+    def respond(self, id: int, result: object = {}):
+        msg: Response = {"id": id, "result": result}
         self.send(msg)
 
     def notify(self, method: str, params: dict = {}) -> None:
@@ -536,12 +536,15 @@ def translate_log_severity(type: int) -> int:
 
 @handles(msg="workspace/configuration")
 def on_workspace_configuration(server: Server, msg: Request) -> None:
-    result = unflatten({
-        k: v
-        for section in {item.get("section") for item in msg["params"]["items"]}
-        for k, v in server.config.settings.items()
-        if not section or k.startswith(section)
-    })
+    # print("--> msg", msg)
+    result = [
+        unflatten({
+            k:v
+            for k, v in server.config.settings.items()
+            if not (section := item.get("section")) or k.startswith(section)
+        })
+        for item in msg["params"]["items"]
+    ]
     server.respond(msg["id"], result)
 
 
