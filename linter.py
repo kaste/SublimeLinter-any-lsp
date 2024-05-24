@@ -103,7 +103,12 @@ class Notification(Message):
     ...
 
 class Request(Message):
-    id: NotRequired[int]
+    id: int
+
+
+class Response(Message):
+    id: int
+    result: NotRequired[dict]
 
 
 def encode_message(msg: Message) -> bytes:
@@ -231,6 +236,10 @@ class Server:
         self.send(msg)
         return fut
 
+    def respond(self, id: int, result: dict = {}):
+        msg: Response = {"id": id, "result": result.copy()}
+        self.send(msg)
+
     def notify(self, method: str, params: dict = {}) -> None:
         self.send({"method": method, "params": params.copy()})
 
@@ -280,7 +289,8 @@ class Server:
             self.logger.warn("Server `exit` has already been requested")
             return
 
-        if message["method"] == "initialize":
+        method = message.get("method")
+        if method == "initialize":
             if self.state == "INIT":
                 self.write_message(message)
                 self.state = "INITIALIZE_REQUESTED"
@@ -288,7 +298,7 @@ class Server:
                 self.logger.warn("`initialize` only valid in INIT state")
             return
 
-        if message["method"] == "initialized":
+        if method == "initialized":
             if self.state == "INITIALIZE_REQUESTED":
                 self.write_message(message)
                 self.state = "READY"
@@ -303,7 +313,7 @@ class Server:
                 self.logger.warn("`initialized` only valid in INITIALIZE_REQUESTED state")
             return
 
-        if message["method"] == "shutdown":
+        if method == "shutdown":
             if self.state == "READY":
                 self.write_message(message)
                 self.state = "SHUTDOWN_REQUESTED"
@@ -311,7 +321,7 @@ class Server:
                 self.logger.warn("`shutdown` only valid in READY state")
             return
 
-        if message["method"] == "exit":
+        if method == "exit":
             self.write_message(message)
             self.state = "EXIT_REQUESTED"
             return
@@ -367,6 +377,7 @@ def start_server(config: ServerConfig, handlers: dict[str, Callback] = {}) -> Se
     writer = proc.stdin
     killer = partial(try_kill_proc, proc)
     server = Server(config, reader, writer, killer, handlers)
+    server.add_listener(partial(on_workspace_configuration, server))
     server.add_listener(partial(on_log_message, server))
 
     folder_config = {
@@ -391,6 +402,8 @@ def start_server(config: ServerConfig, handlers: dict[str, Callback] = {}) -> Se
             server.capabilities = msg["result"]["capabilities"]
         except KeyError:
             pass
+        if config.settings:
+            server.notify("workspace/didChangeConfiguration", {"settings": config.settings})
         server.notify("initialized")
 
     return server
@@ -494,6 +507,17 @@ def translate_log_severity(type: int) -> int:
         3: logging.INFO,
         4: logging.DEBUG
     }.get(type, logging.WARNING)
+
+
+@handles(msg="workspace/configuration")
+def on_workspace_configuration(server: Server, msg: Request) -> None:
+    result = unflatten({
+        k: v
+        for section in {item.get("section") for item in msg["params"]["items"]}
+        for k, v in server.config.settings.items()
+        if not section or k.startswith(section)
+    })
+    server.respond(msg["id"], result)
 
 
 @handles(msg="textDocument/publishDiagnostics")
