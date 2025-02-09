@@ -36,13 +36,13 @@ from typing import (
     Optional,
     TypedDict,
     TypeVar,
+    Union,
 )
 
-from typing_extensions import NotRequired, ParamSpec
+from typing_extensions import Concatenate, NotRequired, ParamSpec
 
 P = ParamSpec('P')
 T = TypeVar('T')
-Callback = Callable[["Message"], None]
 
 
 import sublime
@@ -96,22 +96,26 @@ max_capabilities_per_service: dict[str, dict] = {}
 _counter = Counter()
 
 
-class Message(TypedDict, total=False):
+class Message_(TypedDict, total=False):
     jsonrpc: str
+
+class Notification(Message_):
     method: str
     params: NotRequired[dict]
 
-
-class Notification(Message):
-    ...
-
-class Request(Message):
+class Request(Message_):
     id: int
+    method: str
+    params: NotRequired[dict]
 
-
-class Response(Message):
+class Response(Message_):
     id: int
     result: NotRequired[object]
+    error: NotRequired[object]
+
+
+Message = Union[Request, Response, Notification]
+Callback = Callable[["Server", Message], None]
 
 
 def encode_message(msg: Message) -> bytes:
@@ -226,7 +230,7 @@ class Server:
 
             for handler in self.handlers.values():
                 try:
-                    handler(msg)
+                    handler(self, msg)
                 except Exception:
                     traceback.print_exc()
 
@@ -251,7 +255,7 @@ class Server:
         self.send({"method": method, "params": params.copy()})
 
     def write_message(self, message: Message) -> None:
-        msg: Message = {"jsonrpc": "2.0", **message}
+        msg: Message = {"jsonrpc": "2.0", **message}  # type: ignore[assignment]
 
         if self.logger.isEnabledFor(logging.DEBUG):
             sanitized = sanitize_message(msg)
@@ -391,8 +395,8 @@ def start_server(config: ServerConfig, handlers: dict[str, Callback] = {}) -> Se
     writer = proc.stdin
     killer = partial(try_kill_proc, proc)
     server = Server(config, reader, writer, killer, handlers)
-    server.add_listener(partial(on_workspace_configuration, server))
-    server.add_listener(partial(on_log_message, server))
+    server.add_listener(on_workspace_configuration)
+    server.add_listener(on_log_message)
 
     folder_config = {
         "rootUri": Path(config.root_dir).as_uri() if config.root_dir else None,
@@ -463,7 +467,7 @@ class AnyLSP(Linter):
             if reason == "on_load":
                 remember_server_for_view(self.view, server)
                 server.add_listener(
-                    partial(diagnostics_handler, server, default_error_type=self.default_type)
+                    partial(diagnostics_handler, default_error_type=self.default_type)
                 )
 
         if reason == "on_load":
@@ -499,30 +503,29 @@ class AnyLSP(Linter):
 
         raise TransientError("lsp's answer on their own will.")
 
+# We want that `handles` turns specific message handlers into general message
+# handlers.  Hence `R -> Message`.
+# Note that there is no way to tell that e.g. "logMessage" is a notification
+# and not a request.  That will be a future endeavor.
+R = TypeVar('R', bound=Message)
 
-def handles(**kwargs) -> Callable[[Callable[P, None]], Callable[P, None]]:
-    try:
-        msg_arg_name = next(iter(kwargs.keys()))
-    except StopIteration:
-        raise TypeError("can't figure out the argument name of the message")
-
-    wanted_method = kwargs[msg_arg_name]
-
-    def decorator(fn: Callable[P, None]) -> Callable[P, None]:
-        sig = inspect.signature(fn)
-
+def handles(wanted_method: str, /) -> Callable[
+    [Callable[Concatenate[Server, R,       P], None]],
+     Callable[Concatenate[Server, Message, P], None]
+]:
+    def decorator(
+        fn: Callable[Concatenate[Server, R,       P], None]
+    ) ->    Callable[Concatenate[Server, Message, P], None]:
         @wraps(fn)
-        def wrapped(*args: P.args, **kwargs: P.kwargs) -> None:
-            bound = sig.bind(*args, **kwargs)
-            msg = bound.arguments[msg_arg_name]
-            if msg.get("method") == wanted_method:
-                fn(*args, **kwargs)
+        def wrapped(s, m, *args: P.args, **kwargs: P.kwargs) -> None:
+            if m.get("method") == wanted_method:
+                fn(s, m, *args, **kwargs)
 
         return wrapped
     return decorator
 
 
-@handles(msg="window/logMessage")
+@handles("window/logMessage")
 def on_log_message(server: Server, msg: Notification) -> None:
     server.logger.log(
         translate_log_severity(msg["params"]["type"]),
@@ -539,7 +542,7 @@ def translate_log_severity(type: int) -> int:
     }.get(type, logging.WARNING)
 
 
-@handles(msg="workspace/configuration")
+@handles("workspace/configuration")
 def on_workspace_configuration(server: Server, msg: Request) -> None:
     # print("--> msg", msg)
     result = [
@@ -553,8 +556,12 @@ def on_workspace_configuration(server: Server, msg: Request) -> None:
     server.respond(msg["id"], result)
 
 
-@handles(msg="textDocument/publishDiagnostics")
-def diagnostics_handler(server: Server, msg: Message, default_error_type: str = "error") -> None:
+@handles("textDocument/publishDiagnostics")
+def diagnostics_handler(
+    server: Server, msg: Notification,
+    *,
+    default_error_type: str = "error"
+) -> None:
     # print("diagnostics_handler", server.name)
     # print("diagnostics_handler--")
     # print("msg", msg)
