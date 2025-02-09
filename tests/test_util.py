@@ -15,7 +15,7 @@ class TestMessageFormat(DeferrableTestCase):
         ({"method": "hello"}, b'Content-Length: 19\r\n\r\n{"method": "hello"}'),
     ])
     def testFormatMessage(self, input, expected):
-        self.assertEqual(linter_module.format_message(input), expected)
+        self.assertEqual(linter_module.encode_message(input), expected)
 
     @p.expand([
         (b'Content-Length: 19\r\n\r\n{"method": "hello"}', {"method": "hello"}),
@@ -67,4 +67,36 @@ class TestDictUnflattening(DeferrableTestCase):
         ),
     ])
     def testUnflattenDict(self, input, expected):
-        self.assertEqual(linter_module.unflatten(input), expected)
+        self.assertEqual(linter_module.inflate(input), expected)
+
+
+class TestReadPath(DeferrableTestCase):
+    @p.expand([
+        (
+            {"foo": {"bar": "baz"}}, "foo.bar", "baz"
+        ),
+        (
+            {"foo": {"bar": "baz"}}, "foo.baz", None
+        ),
+        (
+            {"foo": {"bar": "baz"}}, "foo", {"bar": "baz"}
+        ),
+        (
+            {"foo": {"bar": "baz"}}, "foo.bar.baz", None
+        ),
+        (
+            {}, "non.existent.path", None
+        ),
+    ])
+    def testReadPath(self, input, path, expected):
+        self.assertEqual(linter_module.read_path(input, path), expected)
+
+    def testReadPathDefault(self):
+        actual = linter_module.read_path(
+            {"foo": {"bar": "baz"}},
+            "foo.baz",
+            "default"
+        )
+        self.assertEqual(actual, "default")
+
+

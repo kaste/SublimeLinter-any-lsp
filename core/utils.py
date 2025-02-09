@@ -15,16 +15,16 @@ T = TypeVar('T')
 
 
 
-def try_kill_proc(proc):
+def try_kill_proc(proc: subprocess.Popen):
     if proc:
         try:
             kill_proc(proc)
         except ProcessLookupError:
             pass
-        proc.got_killed = True
+        proc.was_terminated = True  # type: ignore[attr-defined]
 
 
-def kill_proc(proc):
+def kill_proc(proc: subprocess.Popen):
     if sys.platform == "win32":
         # terminate would not kill process opened by the shell cmd.exe,
         # it will only kill cmd.exe leaving the child running
@@ -38,8 +38,8 @@ def kill_proc(proc):
         proc.terminate()
 
 
-def proc_has_been_killed(proc):
-    return getattr(proc, "got_killed", False)
+def proc_has_been_killed(proc: subprocess.Popen) -> bool:
+    return getattr(proc, "was_terminated", False)
 
 
 def run_on_new_thread(fn: Callable[P, T], *args: P.args, **kwargs: P.kwargs) -> threading.Thread:
@@ -68,7 +68,15 @@ class Counter:
         return next(self._incs) - next(self._decs)
 
 
-def unflatten(d: dict) -> dict:
+def inflate(d: dict) -> dict:
+    """
+    Transforms a flat dictionary with dot-separated keys into a nested
+    dictionary.
+
+    Example:
+        >>> inflate({'a.b.c': 1, 'a.b.d': 2, 'e': 3})
+        {'a': {'b': {'c': 1, 'd': 2}}, 'e': 3}
+    """
     rv: dict = {}
     for key, value in d.items():
         parts = key.split(".")
@@ -79,12 +87,27 @@ def unflatten(d: dict) -> dict:
     return rv
 
 
-def read_path(d: dict, path: str) -> object:
+def read_path(d: dict, path: str, /, default=None) -> object:
+    """
+    Retrieve a value from a nested dictionary using a dot-separated path.
+
+    Returns the value found at the specified path, or the default value
+    if the path is not found.
+
+    Examples:
+        >>> read_path({'a': {'b': {'c': 1}}}, "a.b.c")
+        1
+        >>> read_path({'a': {'b': {'c': 1}}}, "a.b.d")
+        None
+        >>> read_path({'a': {'b': {'c': 1}}}, "a.b.d", default="default")
+        "default"
+    """
     parts = path.split(".")
     edge = d
     for part in parts:
-        edge = edge.get(part, None)
-        if edge is None:
-            return None  # type: ignore[unreachable]
+        try:
+            edge = edge[part]
+        except KeyError:
+            return default
     return edge
 

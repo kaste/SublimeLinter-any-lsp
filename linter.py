@@ -67,17 +67,17 @@ from SublimeLinter.lint.quick_fix import (
     quick_actions_for,
 )
 
-from .core.utils import Counter, read_path, run_on_new_thread, try_kill_proc, unflatten
+from .core.utils import Counter, inflate, read_path, run_on_new_thread, try_kill_proc
 
 logger = logging.getLogger('SublimeLinter.plugin.lsp')
 JSON_RPC_MESSAGE = "Content-Length: {}\r\n\r\n{}"
 DEFAULT_ERROR_TYPE = "error"
-CLIENT_INFO = unflatten({
+CLIENT_INFO = inflate({
     "processId": os.getpid(),
     "clientInfo.name": "SublimeLinter",
     "clientInfo.version": "4",
 })
-MINIMAL_CAPABILITIES = unflatten({
+MINIMAL_CAPABILITIES = inflate({
     "textDocument.diagnostic.dynamicRegistration": True,
     "textDocument.diagnostic.relatedDocumentSupport": True,
     "textDocument.publishDiagnostics.codeDescriptionSupport": True,
@@ -460,7 +460,7 @@ class AnyLSP(Linter):
                 )
 
         if reason == "on_load":
-            server.notify("textDocument/didOpen", unflatten({
+            server.notify("textDocument/didOpen", inflate({
                 "textDocument.uri": canoncial_uri_for_view(self.view),
                 "textDocument.languageId": language_id_for_view(self.view),
                 "textDocument.version": self.view.change_count(),
@@ -468,14 +468,14 @@ class AnyLSP(Linter):
             }))
 
         elif reason == "on_modified":
-            server.notify("textDocument/didChange", unflatten({
+            server.notify("textDocument/didChange", inflate({
                 "textDocument.uri": canoncial_uri_for_view(self.view),
                 "textDocument.version": self.view.change_count(),
                 "contentChanges": [{ "text": code }]
             }))
 
         if server.has_capability("diagnosticProvider"):
-            req = server.request("textDocument/diagnostic", unflatten({
+            req = server.request("textDocument/diagnostic", inflate({
                 "textDocument.uri": canoncial_uri_for_view(self.view),
             }))
 
@@ -536,7 +536,7 @@ def translate_log_severity(type: int) -> int:
 def on_workspace_configuration(server: Server, msg: Request) -> None:
     # print("--> msg", msg)
     result = [
-        unflatten({
+        inflate({
             k:v
             for k, v in server.config.settings.items()
             if not (section := item.get("section")) or k.startswith(section)
@@ -650,7 +650,7 @@ class Eslint(AnyLSP):
         "env": {"DEBUG": "eslint:*,-eslint:code-path"},
         # "disable": True,
         "selector": "source.js",
-        "settings": unflatten({
+        "settings": inflate({
             'validate': 'on',
             'packageManager': None,
             'useESLintClass': False,
