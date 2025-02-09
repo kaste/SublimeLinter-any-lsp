@@ -572,10 +572,16 @@ def diagnostics_handler(server: Server, msg: Message, default_error_type: str = 
         server.logger.info(f"skip: view has changed. {view.change_count()} -> {version}")
         return
 
-    read_out_and_broadcast_errors(linter_name, view, msg["params"]["diagnostics"], default_error_type)
+    read_out_and_broadcast_errors(
+        linter_name, view, msg["params"]["diagnostics"], default_error_type)
 
 
-def read_out_and_broadcast_errors(linter_name: str, view: sublime.View, items: dict, default_error_type: str):
+def read_out_and_broadcast_errors(
+    linter_name: str,
+    view: sublime.View,
+    items: dict,
+    default_error_type: str
+):
     file_name = util.canonical_filename(view)
     errors: list[persist.LintError] = []
     for diagnostic in items:
