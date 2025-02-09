@@ -32,6 +32,7 @@ from typing import (
     Generic,
     Iterator,
     Literal,
+    Mapping,
     Optional,
     TypedDict,
     TypeVar,
@@ -253,19 +254,7 @@ class Server:
         msg: Message = {"jsonrpc": "2.0", **message}
 
         if self.logger.isEnabledFor(logging.DEBUG):
-            sanitized = copy.deepcopy(msg)
-            try:
-                msg["params"]["contentChanges"][0]["text"]
-            except KeyError:
-                pass
-            else:
-                sanitized["params"]["contentChanges"][0]["text"] = "..."
-            try:
-                msg["params"]["textDocument"]["text"]
-            except KeyError:
-                pass
-            else:
-                sanitized["params"]["textDocument"]["text"] = "..."
+            sanitized = sanitize_message(msg)
             self.logger.debug(f"-> {sanitized}")
 
         try:
@@ -343,6 +332,23 @@ class Server:
         if self.state in ("INIT", "INITIALIZE_REQUESTED"):
             self.messages_out_queue.append(message)
             return
+
+
+def sanitize_message(msg: Mapping) -> Mapping:
+    sanitized = copy.deepcopy(msg)
+    try:
+        msg["params"]["contentChanges"][0]["text"]
+    except KeyError:
+        pass
+    else:
+        sanitized["params"]["contentChanges"][0]["text"] = "..."
+    try:
+        msg["params"]["textDocument"]["text"]
+    except KeyError:
+        pass
+    else:
+        sanitized["params"]["textDocument"]["text"] = "..."
+    return sanitized
 
 
 running_servers: dict[tuple[str, Optional[str]], Server] = {}
