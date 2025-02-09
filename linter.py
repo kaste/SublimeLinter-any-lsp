@@ -481,7 +481,7 @@ class AnyLSP(Linter):
 
             @req.on_response
             def on_diagnostics(msg):
-                print("on_diagnostics", self.name)
+                # print("on_diagnostics", self.name)
                 try:
                     items = msg["result"]["items"]
                 except KeyError:
@@ -548,7 +548,7 @@ def on_workspace_configuration(server: Server, msg: Request) -> None:
 
 @handles(msg="textDocument/publishDiagnostics")
 def diagnostics_handler(server: Server, msg: Message, default_error_type: str = "error") -> None:
-    print("diagnostics_handler", server.name)
+    # print("diagnostics_handler", server.name)
     # print("diagnostics_handler--")
     # print("msg", msg)
     linter_name = server.name
