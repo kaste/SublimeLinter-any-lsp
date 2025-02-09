@@ -231,6 +231,7 @@ class Server:
 
         self.state = "DEAD"
         self.logger.info(f"`{self.name}`> is now dead.")
+        print(f"`{self.name}`> is now dead.")
 
 
     def request(self, method: str, params: dict = {}) -> OkFuture[Message]:
