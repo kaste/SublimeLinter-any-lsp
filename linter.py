@@ -932,7 +932,7 @@ def cleanup_servers(*, keep_alive=(KEEP_ALIVE_USED_INTERVAL, KEEP_ALIVE_UNUSED_I
 
         if idle_time > max_idle_time:
             server.logger.info(
-                f"Server idle for {idle_time:.1f}s (> {max_idle_time}s). Shutting down."
+                f"{server.name} idle for {idle_time:.1f}s (> {max_idle_time}s). Shutting down."
             )
             shutdown_server(server)
 
