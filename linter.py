@@ -509,20 +509,19 @@ class AnyLSP(Linter):
 # and not a request.  That will be a future endeavor.
 R = TypeVar('R', bound=Message)
 
-def handles(wanted_method: str, /) -> Callable[
-    [Callable[Concatenate[Server, R,       P], None]],
-     Callable[Concatenate[Server, Message, P], None]
-]:
-    def decorator(
+class handles(Generic[R]):
+    def __init__(self, wanted_method: str, /) -> None:
+        self.wanted_method = wanted_method
+
+    def __call__(self,
         fn: Callable[Concatenate[Server, R,       P], None]
     ) ->    Callable[Concatenate[Server, Message, P], None]:
         @wraps(fn)
         def wrapped(s, m, *args: P.args, **kwargs: P.kwargs) -> None:
-            if m.get("method") == wanted_method:
+            if m.get("method") == self.wanted_method:
                 fn(s, m, *args, **kwargs)
 
         return wrapped
-    return decorator
 
 
 @handles("window/logMessage")
