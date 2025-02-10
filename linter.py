@@ -37,9 +37,10 @@ from typing import (
     TypedDict,
     TypeVar,
     Union,
+    no_type_check,
 )
 
-from typing_extensions import Concatenate, NotRequired, ParamSpec
+from typing_extensions import Concatenate, NotRequired, ParamSpec, get_args, overload
 
 P = ParamSpec('P')
 T = TypeVar('T')
@@ -68,6 +69,7 @@ from SublimeLinter.lint.quick_fix import (
     quick_actions_for,
 )
 
+from . import _lsp
 from .core.utils import Counter, inflate, read_path, run_on_new_thread, try_kill_proc
 
 logger = logging.getLogger('SublimeLinter.plugin.lsp')
@@ -99,23 +101,39 @@ _counter = Counter()
 class Message_(TypedDict, total=False):
     jsonrpc: str
 
+class NotificationS(Message_):
+    method: str
+
 class Notification(Message_):
     method: str
-    params: NotRequired[dict]
+    params: dict
+
+AnyNotification = Union[NotificationS, Notification]
+
+class RequestS(Message_):
+    id: int
+    method: str
 
 class Request(Message_):
     id: int
     method: str
-    params: NotRequired[dict]
+    params: dict
+
+AnyRequest = Union[RequestS, Request]
 
 class Response(Message_):
     id: int
     result: NotRequired[object]
     error: NotRequired[object]
 
-
-Message = Union[Request, Response, Notification]
+Message = Union[RequestS, Request, Response, NotificationS, Notification]
 Callback = Callable[["Server", Message], None]
+MESSAGES_TO_TYPES = {
+    _lsp.Notifications: NotificationS,
+    _lsp.NotificationsWithParams: Notification,
+    _lsp.Requests: RequestS,
+    _lsp.RequestsWithParams: Request,
+}
 
 
 def encode_message(msg: Message) -> bytes:
@@ -242,7 +260,7 @@ class Server:
     def request(self, method: str, params: dict = {}) -> OkFuture[Message]:
         fut: Future[Message]
         id = next_id()
-        msg: Request = {"id": id, "method": method, "params": params.copy()}
+        msg: AnyRequest = {"id": id, "method": method, "params": params.copy()}
         self.pending_request_ids[id] = fut = OkFuture()
         self.send(msg)
         return fut
@@ -503,28 +521,89 @@ class AnyLSP(Linter):
 
         raise TransientError("lsp's answer on their own will.")
 
-# We want that `handles` turns specific message handlers into general message
+# We want that `handler` turns specific message handlers into general message
 # handlers.  Hence `R -> Message`.
-# Note that there is no way to tell that e.g. "logMessage" is a notification
-# and not a request.  That will be a future endeavor.
 R = TypeVar('R', bound=Message)
 
 class handles(Generic[R]):
-    def __init__(self, wanted_method: str, /) -> None:
+    """
+    A decorator that filters lsp messages based on their method name and server name.
+
+    Attributes:
+        wanted_method (str): The method name that this handler is interested in.
+        server_name (str, optional): The name of the server to which this handler is bound.
+            If not set, the handler will be called for any server.
+
+    Examples:
+        @handles("shutdown", "ruff")
+        def handler_function(server, message: Message):
+            pass
+
+        @handles[Notification]("shutdown")
+        def handler_function(server, message: Notification):
+            pass
+    """
+    def __init__(self, wanted_method: str, server_name: str | None = None, /) -> None:
         self.wanted_method = wanted_method
+        self.server_name = server_name
 
     def __call__(self,
         fn: Callable[Concatenate[Server, R,       P], None]
     ) ->    Callable[Concatenate[Server, Message, P], None]:
         @wraps(fn)
-        def wrapped(s, m, *args: P.args, **kwargs: P.kwargs) -> None:
+        def wrapped(s: Server, m, *args: P.args, **kwargs: P.kwargs) -> None:
+            if self.server_name and self.server_name != s.name:
+                return
             if m.get("method") == self.wanted_method:
                 fn(s, m, *args, **kwargs)
 
         return wrapped
 
+notification_handler = handles[AnyNotification]
+request_handler = handles[AnyRequest]
 
-@handles("window/logMessage")
+
+@overload
+def on(name: _lsp.Notifications) -> handles[NotificationS]: ...
+@overload
+def on(name: _lsp.NotificationsWithParams) -> handles[Notification]: ...
+@overload
+def on(name: _lsp.Requests) -> handles[RequestS]: ...
+@overload
+def on(name: _lsp.RequestsWithParams) -> handles[Request]: ...
+@overload
+def on(name: str, type_: type[R] | None = None) -> handles[R]: ...
+
+@no_type_check
+def on(name, type_=None):
+    """
+    A helper function that allows to create message handlers for specific message types.
+
+    Usage:
+        @on("shutdown")
+        def handler_function(server, message: RequestS): ...
+
+        @on("customMessage", Notification)
+        def handler_function(server, message: Notification): ...
+
+    Available message types:
+        Message
+        AnyNotification, Notification, NotificationS
+        AnyRequest, Request, RequestS
+
+    The S-suffixed types are for messages without parameters.
+    """
+    if type_ is None:
+        for methods, t in MESSAGES_TO_TYPES.items():
+            if name in get_args(methods):
+                type_ = t
+                break
+        else:
+            type_ = Message
+    return handles[type_](name)
+
+
+@on("window/logMessage")
 def on_log_message(server: Server, msg: Notification) -> None:
     server.logger.log(
         translate_log_severity(msg["params"]["type"]),
@@ -541,7 +620,7 @@ def translate_log_severity(type: int) -> int:
     }.get(type, logging.WARNING)
 
 
-@handles("workspace/configuration")
+@on("workspace/configuration")
 def on_workspace_configuration(server: Server, msg: Request) -> None:
     # print("--> msg", msg)
     result = [
@@ -555,7 +634,7 @@ def on_workspace_configuration(server: Server, msg: Request) -> None:
     server.respond(msg["id"], result)
 
 
-@handles("textDocument/publishDiagnostics")
+@on("textDocument/publishDiagnostics")
 def diagnostics_handler(
     server: Server, msg: Notification,
     *,
