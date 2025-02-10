@@ -83,6 +83,10 @@ LOG_SEVERITY_MAP = {
 
 JSON_RPC_MESSAGE = "Content-Length: {}\r\n\r\n{}"
 DEFAULT_ERROR_TYPE = "error"
+SEVERITY_TO_ERROR_TYPE = {
+    1: "error", 2: "warning", 3: "info", 4: "hint"
+}
+
 CLIENT_INFO = inflate({
     "processId": os.getpid(),
     "clientInfo.name": "SublimeLinter",
@@ -686,7 +690,9 @@ def read_out_and_broadcast_errors(
             "filename": file_name,
             "msg": diagnostic["message"],
             "code": diagnostic.get("code", ""),
-            "error_type": severity_to_type(diagnostic.get("severity"), default=default_error_type),
+            "error_type": SEVERITY_TO_ERROR_TYPE.get(
+                diagnostic.get("severity"),
+                default_error_type),
             "line": diagnostic["range"]["start"]["line"],
             "start": diagnostic["range"]["start"]["character"],
             "region": region,
@@ -705,12 +711,6 @@ def read_out_and_broadcast_errors(
     sublime.set_timeout_async(partial(
         sublime_linter.update_file_errors, file_name, linter_name, errors, reason=None
     ))
-
-
-def severity_to_type(severity: int | None, default=DEFAULT_ERROR_TYPE) -> str:
-    return {
-        1: "error", 2: "warning", 3: "info", 4: "hint", None: default
-    }.get(severity, default)
 
 
 
