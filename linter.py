@@ -201,25 +201,31 @@ class ServerConfig:
         return (self.name, self.root_dir)
 
 
-@dataclass
 class Server:
-    config: ServerConfig
-    reader: IO[bytes]
-    writer: IO[bytes]
-    killer: Callable[[], None] = lambda: None
-    handlers: dict[str, Callback] = field(default_factory=dict)
-
-    state: ServerStates = field(init=False, default="INIT")
-    messages_out_queue: deque[Message] = field(init=False, default_factory=deque)
-    pending_request_ids: dict[int, Future[Message]] = field(init=False, default_factory=dict)
-    capabilities: dict[str, object] = field(init=False, default_factory=dict)
-
-    def __post_init__(self):
-        self.handlers = self.handlers.copy()
-        reader_thread = run_on_new_thread(self.reader_loop)
-        self.wait: Callable[[float], bool] = partial(join_thread, reader_thread)
-        self._writer_lock = threading.Lock()
+    def __init__(
+        self,
+        config: ServerConfig,
+        reader: IO[bytes],
+        writer: IO[bytes],
+        killer: Callable[[], None] = lambda: None,
+        handlers: dict[str, Callback] = {}
+    ):
+        self.config = config
+        self.reader = reader
+        self.writer = writer
+        self.killer = killer
+        self.handlers = handlers.copy()
         self.logger = logging.getLogger(f"SublimeLinter.plugin.{self.name}")
+        self.capabilities: dict[str, object] = {}
+
+        # Initialize state fields
+        self.state: ServerStates = "INIT"
+        self.messages_out_queue: deque[Message] = deque()
+        self.pending_request_ids: dict[int, Future[Message]] = {}
+
+        # Set up reader thread and lock
+        self._writer_lock = threading.Lock()
+        self._reader_thread = run_on_new_thread(self.reader_loop)
 
     @property
     def name(self) -> str:
@@ -239,6 +245,9 @@ class Server:
                 print(f"can't determine a key for {handler}")
                 return
             self.handlers[key] = handler
+
+    def wait(self, timeout: float) -> bool:
+        return join_thread(self._reader_thread, timeout)
 
     def kill(self):
         self.logger.info("SIGKILL")
