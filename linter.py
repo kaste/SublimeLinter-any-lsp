@@ -901,21 +901,40 @@ def did_close(view: sublime.View) -> None:
         server.notify("textDocument/didClose", {"uri": uri})
 
 
-def join_popen(proc: subprocess.Popen, timeout: float) -> bool:
-    try:
-        proc.wait(timeout)
-    except TimeoutError:
-        return False
-    else:
-        return True
-
-
-def join_thread(thread: threading.Thread, timeout: float) -> bool:
-    thread.join(timeout)
-    return not thread.is_alive()
+def attached_servers() -> set[ServerIdentity]:
+    return {
+        server.config.identity()
+        for d in servers_attached_per_buffer.values()
+        for server in d.values()
+    }
 
 
 WAIT_TIME = 0.5
+ONE_MINUTE = 60
+KEEP_ALIVE_USED_INTERVAL  = 10 * ONE_MINUTE
+KEEP_ALIVE_UNUSED_INTERVAL = 5 * ONE_MINUTE
+
+def cleanup_servers(*, keep_alive=(KEEP_ALIVE_USED_INTERVAL, KEEP_ALIVE_UNUSED_INTERVAL)) -> None:
+    used_servers = attached_servers()
+    current = time.monotonic()
+    keep_alive_used, keep_alive_unused = keep_alive
+
+    for identity, server in running_servers.items():
+        if server.is_dead():
+            continue
+
+        idle_time = current - server.last_interaction
+        max_idle_time = (
+            keep_alive_used
+            if identity in used_servers
+            else keep_alive_unused
+        )
+
+        if idle_time > max_idle_time:
+            server.logger.info(
+                f"Server idle for {idle_time:.1f}s (> {max_idle_time}s). Shutting down."
+            )
+            shutdown_server(server)
 
 
 def shutdown_server(server: Server) -> bool:
@@ -957,6 +976,20 @@ def shutdown_server_(server: Server) -> bool:
 
 
 
+def join_popen(proc: subprocess.Popen, timeout: float) -> bool:
+    try:
+        proc.wait(timeout)
+    except TimeoutError:
+        return False
+    else:
+        return True
+
+
+def join_thread(thread: threading.Thread, timeout: float) -> bool:
+    thread.join(timeout)
+    return not thread.is_alive()
+
+
 class OkFuture(Future, Generic[T]):
     def on_response(self, fn: Callable[[T], None]) -> None:
         def wrapper(fut):
@@ -976,41 +1009,6 @@ class OkFuture(Future, Generic[T]):
             raise
         except Exception:
             pass
-
-
-def attached_servers() -> set[ServerIdentity]:
-    return {
-        server.config.identity()
-        for d in servers_attached_per_buffer.values()
-        for server in d.values()
-    }
-
-
-ONE_MINUTE = 60
-KEEP_ALIVE_USED_INTERVAL  = 10 * ONE_MINUTE
-KEEP_ALIVE_UNUSED_INTERVAL = 5 * ONE_MINUTE
-
-def cleanup_servers(*, keep_alive=(KEEP_ALIVE_USED_INTERVAL, KEEP_ALIVE_UNUSED_INTERVAL)) -> None:
-    used_servers = attached_servers()
-    current = time.monotonic()
-    keep_alive_used, keep_alive_unused = keep_alive
-
-    for identity, server in running_servers.items():
-        if server.is_dead():
-            continue
-
-        idle_time = current - server.last_interaction
-        max_idle_time = (
-            keep_alive_used
-            if identity in used_servers
-            else keep_alive_unused
-        )
-
-        if idle_time > max_idle_time:
-            server.logger.info(
-                f"Server idle for {idle_time:.1f}s (> {max_idle_time}s). Shutting down."
-            )
-            shutdown_server(server)
 
 
 def language_id_for_view(view: sublime.View) -> str:
