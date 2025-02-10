@@ -250,7 +250,7 @@ class Server:
         return join_thread(self._reader_thread, timeout)
 
     def kill(self):
-        self.logger.info("SIGKILL")
+        self.logger.info(f"SIGKILL {self.name}")
         self.killer()
 
     def request(self, method: str, params: dict = {}) -> OkFuture[Message]:
