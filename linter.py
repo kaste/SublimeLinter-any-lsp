@@ -971,14 +971,18 @@ class OkFuture(Future, Generic[T]):
             pass
 
 
-def cleanup_servers() -> None:
-    used_servers = {
+def attached_servers() -> set[ServerIdentity]:
+    return {
         server.config.identity()
         for d in servers_attached_per_buffer.values()
         for server in d.values()
     }
+
+
+def cleanup_servers() -> None:
+    used_servers = attached_servers()
     for identity, server in running_servers.items():
-        if id not in used_servers:
+        if identity not in used_servers:
             shutdown_server(server)
 
 
