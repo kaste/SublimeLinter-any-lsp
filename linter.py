@@ -40,7 +40,7 @@ from typing import (
     no_type_check,
 )
 
-from typing_extensions import Concatenate, NotRequired, ParamSpec, get_args, overload
+from typing_extensions import Concatenate, NotRequired, ParamSpec, TypeAlias, get_args, overload
 
 P = ParamSpec('P')
 T = TypeVar('T')
@@ -173,6 +173,9 @@ def parse_for_message(stream: IO[bytes]) -> Optional[Message]:
         return None
 
 
+ServerName: TypeAlias = str
+RootDir: TypeAlias = Optional[str]
+ServerIdentity: TypeAlias = "tuple[ServerName, RootDir]"
 ServerStates = Literal[
     "INIT", "INITIALIZE_REQUESTED", "READY", "SHUTDOWN_REQUESTED", "EXIT_REQUESTED", "DEAD"]
 
@@ -192,7 +195,7 @@ class ServerConfig:
             next_capabilities = merge_dicts(current_capabilities, self.capabilities)
             self.capabilities = max_capabilities_per_service[self.name] = next_capabilities
 
-    def identity(self) -> tuple[str, str | None]:
+    def identity(self) -> ServerIdentity:
         return (self.name, self.root_dir)
 
 
@@ -388,8 +391,8 @@ def sanitize_message(msg: Mapping) -> Mapping:
     return sanitized
 
 
-running_servers: dict[tuple[str, Optional[str]], Server] = {}
-locks: dict[tuple[str, str | None], threading.Lock] = defaultdict(lambda: threading.Lock())
+running_servers: dict[ServerIdentity, Server] = {}
+locks: dict[ServerIdentity, threading.Lock] = defaultdict(lambda: threading.Lock())
 
 
 
