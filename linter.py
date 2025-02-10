@@ -25,6 +25,7 @@ from pathlib import Path
 import subprocess
 import sys
 import threading
+import time
 import traceback
 from typing import (
     IO,
@@ -215,6 +216,7 @@ class Server:
         self.handlers = handlers.copy()
         self.logger = logging.getLogger(f"SublimeLinter.plugin.{self.name}")
         self.capabilities: dict[str, object] = {}
+        self.last_interaction: float = time.monotonic()
 
         # Initialize state fields
         self.state: ServerStates = "INIT"
@@ -268,6 +270,9 @@ class Server:
 
     def in_shutdown_phase(self) -> bool:
         return self.state in ("SHUTDOWN_REQUESTED", "EXIT_REQUESTED", "DEAD")
+
+    def is_dead(self) -> bool:
+        return self.state == "DEAD"
 
     def send(self, message: Message) -> None:
         # print("send message:", message)
@@ -348,9 +353,11 @@ class Server:
         with self._writer_lock:
             self.writer.write(msg_)
             self.writer.flush()
+            self.last_interaction = time.monotonic()
 
     def reader_loop(self):
         while msg := parse_for_message(self.reader):
+            self.last_interaction = time.monotonic()
             # print(f"{self.name} <- {msg}")
             if self.logger.isEnabledFor(logging.DEBUG):
                 self.logger.debug(f"<- {msg}")
@@ -979,10 +986,30 @@ def attached_servers() -> set[ServerIdentity]:
     }
 
 
-def cleanup_servers() -> None:
+ONE_MINUTE = 60
+KEEP_ALIVE_USED_INTERVAL  = 10 * ONE_MINUTE
+KEEP_ALIVE_UNUSED_INTERVAL = 5 * ONE_MINUTE
+
+def cleanup_servers(*, keep_alive=(KEEP_ALIVE_USED_INTERVAL, KEEP_ALIVE_UNUSED_INTERVAL)) -> None:
     used_servers = attached_servers()
+    current = time.monotonic()
+    keep_alive_used, keep_alive_unused = keep_alive
+
     for identity, server in running_servers.items():
-        if identity not in used_servers:
+        if server.is_dead():
+            continue
+
+        idle_time = current - server.last_interaction
+        max_idle_time = (
+            keep_alive_used
+            if identity in used_servers
+            else keep_alive_unused
+        )
+
+        if idle_time > max_idle_time:
+            server.logger.info(
+                f"Server idle for {idle_time:.1f}s (> {max_idle_time}s). Shutting down."
+            )
             shutdown_server(server)
 
 
