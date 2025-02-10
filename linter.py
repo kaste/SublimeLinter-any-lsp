@@ -945,7 +945,7 @@ def shutdown_server_(server: Server) -> bool:
 
     with cond:
         ok = cond.wait(WAIT_TIME * 2)
-    server.logger.info("shtdown in time" if ok else "shtdown too slow")
+    server.logger.info("shutdown in time" if ok else "shutdown too slow")
     return ok
 
 
