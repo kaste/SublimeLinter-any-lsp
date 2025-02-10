@@ -173,11 +173,6 @@ def parse_for_message(stream: IO[bytes]) -> Optional[Message]:
         return None
 
 
-def parse_for_messages(stream: IO):
-    while msg := parse_for_message(stream):
-        yield msg
-
-
 ServerStates = Literal[
     "INIT", "INITIALIZE_REQUESTED", "READY", "SHUTDOWN_REQUESTED", "EXIT_REQUESTED", "DEAD"]
 
