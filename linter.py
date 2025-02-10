@@ -73,6 +73,14 @@ from . import _lsp
 from .core.utils import Counter, inflate, read_path, run_on_new_thread, try_kill_proc
 
 logger = logging.getLogger('SublimeLinter.plugin.lsp')
+LOG_SEVERITY_MAP = {
+    1: logging.ERROR,
+    2: logging.WARNING,
+    3: logging.INFO,
+    4: logging.DEBUG
+}
+
+
 JSON_RPC_MESSAGE = "Content-Length: {}\r\n\r\n{}"
 DEFAULT_ERROR_TYPE = "error"
 CLIENT_INFO = inflate({
@@ -606,18 +614,9 @@ def on(name, type_=None):
 @on("window/logMessage")
 def on_log_message(server: Server, msg: Notification) -> None:
     server.logger.log(
-        translate_log_severity(msg["params"]["type"]),
+        LOG_SEVERITY_MAP.get(msg["params"]["type"], logging.WARNING),
         msg["params"]["message"]
     )
-
-
-def translate_log_severity(type: int) -> int:
-    return {
-        1: logging.ERROR,
-        2: logging.WARNING,
-        3: logging.INFO,
-        4: logging.DEBUG
-    }.get(type, logging.WARNING)
 
 
 @on("workspace/configuration")
