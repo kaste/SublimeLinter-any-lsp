@@ -176,7 +176,7 @@ def parse_for_message(stream: IO[bytes]) -> Optional[Message]:
 ServerName: TypeAlias = str
 RootDir: TypeAlias = Optional[str]
 ServerIdentity: TypeAlias = "tuple[ServerName, RootDir]"
-ServerStates = Literal[
+ServerStates: TypeAlias = Literal[
     "INIT", "INITIALIZE_REQUESTED", "READY", "SHUTDOWN_REQUESTED", "EXIT_REQUESTED", "DEAD"]
 
 
