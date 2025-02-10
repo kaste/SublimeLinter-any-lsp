@@ -253,31 +253,6 @@ class Server:
         self.logger.info("SIGKILL")
         self.killer()
 
-    def reader_loop(self):
-        while msg := parse_for_message(self.reader):
-            # print(f"{self.name} <- {msg}")
-            if self.logger.isEnabledFor(logging.DEBUG):
-                self.logger.debug(f"<- {msg}")
-
-            try:
-                id = msg["id"]  # type: ignore[typeddict-item]
-                fut = self.pending_request_ids.pop(id)
-            except KeyError:
-                pass
-            else:
-                fut.set_result(msg)
-
-            for handler in self.handlers.values():
-                try:
-                    handler(self, msg)
-                except Exception:
-                    traceback.print_exc()
-
-        self.state = "DEAD"
-        self.logger.info(f"`{self.name}`> is now dead.")
-        print(f"`{self.name}`> is now dead.")
-
-
     def request(self, method: str, params: dict = {}) -> OkFuture[Message]:
         fut: Future[Message]
         id = next_id()
@@ -292,27 +267,6 @@ class Server:
 
     def notify(self, method: str, params: dict = {}) -> None:
         self.send({"method": method, "params": params.copy()})
-
-    def write_message(self, message: Message) -> None:
-        msg: Message = {"jsonrpc": "2.0", **message}  # type: ignore[assignment]
-
-        if self.logger.isEnabledFor(logging.DEBUG):
-            sanitized = sanitize_message(msg)
-            self.logger.debug(f"-> {sanitized}")
-
-        try:
-            id = msg["id"]  # type: ignore[typeddict-item]
-            fut = self.pending_request_ids[id]
-        except KeyError:
-            pass
-        else:
-            if not fut.set_running_or_notify_cancel():
-                return
-
-        msg_ = encode_message(msg)
-        with self._writer_lock:
-            self.writer.write(msg_)
-            self.writer.flush()
 
     def in_shutdown_phase(self) -> bool:
         return self.state in ("SHUTDOWN_REQUESTED", "EXIT_REQUESTED", "DEAD")
@@ -375,6 +329,51 @@ class Server:
         if self.state in ("INIT", "INITIALIZE_REQUESTED"):
             self.messages_out_queue.append(message)
             return
+
+    def write_message(self, message: Message) -> None:
+        msg: Message = {"jsonrpc": "2.0", **message}  # type: ignore[assignment]
+
+        if self.logger.isEnabledFor(logging.DEBUG):
+            sanitized = sanitize_message(msg)
+            self.logger.debug(f"-> {sanitized}")
+
+        try:
+            id = msg["id"]  # type: ignore[typeddict-item]
+            fut = self.pending_request_ids[id]
+        except KeyError:
+            pass
+        else:
+            if not fut.set_running_or_notify_cancel():
+                return
+
+        msg_ = encode_message(msg)
+        with self._writer_lock:
+            self.writer.write(msg_)
+            self.writer.flush()
+
+    def reader_loop(self):
+        while msg := parse_for_message(self.reader):
+            # print(f"{self.name} <- {msg}")
+            if self.logger.isEnabledFor(logging.DEBUG):
+                self.logger.debug(f"<- {msg}")
+
+            try:
+                id = msg["id"]  # type: ignore[typeddict-item]
+                fut = self.pending_request_ids.pop(id)
+            except KeyError:
+                pass
+            else:
+                fut.set_result(msg)
+
+            for handler in self.handlers.values():
+                try:
+                    handler(self, msg)
+                except Exception:
+                    traceback.print_exc()
+
+        self.state = "DEAD"
+        self.logger.info(f"`{self.name}`> is now dead.")
+        print(f"`{self.name}`> is now dead.")
 
 
 def sanitize_message(msg: Mapping) -> Mapping:
