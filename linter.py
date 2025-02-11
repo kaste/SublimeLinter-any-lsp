@@ -551,21 +551,22 @@ class AnyLSP(Linter):
 # handlers.  Hence `R -> Message`.
 R = TypeVar('R', bound=Message)
 
-class handles(Generic[R]):
+class MessageHandler(Generic[R]):
     """
-    Internal helper class for the `on` decorator factory.  This *is* the actual
-    decorator, just without the method to type inference.
+    Internal helper class for the `handles` decorator factory.
+
+    This *is* the actual decorator, just without the method to type inference.
 
     Attributes:
         wanted_method (str): The method name that this handler is interested in.
 
     Examples:
-        @handles("shutdown")
+        @MessageHandler("shutdown")
         def handler_function(server, message: Message):
             pass
 
-        notification = handles[Notification]
-        request = handles[Request]
+        notification = MessageHandler[Notification]
+        request = MessageHandler[Request]
     """
     def __init__(self, wanted_method: str, /) -> None:
         self.wanted_method = wanted_method
@@ -582,36 +583,36 @@ class handles(Generic[R]):
 
 
 @overload
-def on(name: _lsp.Notifications) -> handles[NotificationS]: ...
+def handles(name: _lsp.Notifications) -> MessageHandler[NotificationS]: ...
 @overload
-def on(name: _lsp.NotificationsWithParams) -> handles[Notification]: ...
+def handles(name: _lsp.NotificationsWithParams) -> MessageHandler[Notification]: ...
 @overload
-def on(name: _lsp.Requests) -> handles[RequestS]: ...
+def handles(name: _lsp.Requests) -> MessageHandler[RequestS]: ...
 @overload
-def on(name: _lsp.RequestsWithParams) -> handles[Request]: ...
+def handles(name: _lsp.RequestsWithParams) -> MessageHandler[Request]: ...
 @overload
-def on(name: str, type_: type[R] | None = None) -> handles[R]: ...
+def handles(name: str, type_: type[R] | None = None) -> MessageHandler[R]: ...
 @no_type_check
-def on(name, type_=None):
+def handles(name, type_=None):
     """
     A decorator for message handlers that filters lsp messages based on their method name.
 
     Usage:
         # For known methods, the message type is checked according to the spec...
-        @on("shutdown")
+        @handles("shutdown")
         def handler_function(server, message: RequestS): ...
 
         # ...but can be overwritten.
-        @on("shutdown", Message)
+        @handles("shutdown", Message)
         def handler_function(server, message: Message): ...
 
         # For unknown methods, the message type can be set arbitrarily.
-        @on("customMessage")            # <= no need to set `Notification` here
+        @handles("customMessage")            # <= no need to set `Notification` here
         def handler_function(server, message: Notification): ...  # <= but here
 
         # However, you can also create custom decorators for type safety.
-        custom_message = on("customMessage", Notification)
-        custom_message: handles[Notification] = on("customMessage")
+        custom_message = handles("customMessage", Notification)
+        custom_message: MessageHandler[Notification] = handles("customMessage")
 
         @custom_message
         def handler_function(server, message: Notification): ...  # <= type checked
@@ -631,10 +632,10 @@ def on(name, type_=None):
         else:
             type_ = Message  # <= this is a lie; R is unbound ("Never")
                              #    in accordance with the overload above
-    return handles[type_](name)
+    return MessageHandler[type_](name)
 
 
-@on("window/logMessage")
+@handles("window/logMessage")
 def on_log_message(server: Server, msg: Notification) -> None:
     server.logger.log(
         LOG_SEVERITY_MAP.get(msg["params"]["type"], logging.WARNING),
@@ -642,7 +643,7 @@ def on_log_message(server: Server, msg: Notification) -> None:
     )
 
 
-@on("workspace/configuration")
+@handles("workspace/configuration")
 def on_workspace_configuration(server: Server, msg: Request) -> None:
     # print("--> msg", msg)
     result = [
@@ -656,7 +657,7 @@ def on_workspace_configuration(server: Server, msg: Request) -> None:
     server.respond(msg["id"], result)
 
 
-@on("textDocument/publishDiagnostics")
+@handles("textDocument/publishDiagnostics")
 def diagnostics_handler(
     server: Server, msg: Notification,
     *,
