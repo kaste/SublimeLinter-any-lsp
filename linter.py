@@ -546,13 +546,15 @@ class AnyLSP(Linter):
 
         raise TransientError("lsp's answer on their own will.")
 
+
 # We want that `handler` turns specific message handlers into general message
 # handlers.  Hence `R -> Message`.
 R = TypeVar('R', bound=Message)
 
 class handles(Generic[R]):
     """
-    A decorator that filters lsp messages based on their method name.
+    Internal helper class for the `on` decorator factory.  This *is* the actual
+    decorator, just without the method to type inference.
 
     Attributes:
         wanted_method (str): The method name that this handler is interested in.
@@ -562,9 +564,8 @@ class handles(Generic[R]):
         def handler_function(server, message: Message):
             pass
 
-        @handles[Notification]("shutdown")
-        def handler_function(server, message: Notification):
-            pass
+        notification = handles[Notification]
+        request = handles[Request]
     """
     def __init__(self, wanted_method: str, /) -> None:
         self.wanted_method = wanted_method
@@ -579,9 +580,6 @@ class handles(Generic[R]):
 
         return wrapped
 
-notification_handler = handles[AnyNotification]
-request_handler = handles[AnyRequest]
-
 
 @overload
 def on(name: _lsp.Notifications) -> handles[NotificationS]: ...
@@ -593,18 +591,30 @@ def on(name: _lsp.Requests) -> handles[RequestS]: ...
 def on(name: _lsp.RequestsWithParams) -> handles[Request]: ...
 @overload
 def on(name: str, type_: type[R] | None = None) -> handles[R]: ...
-
 @no_type_check
 def on(name, type_=None):
     """
-    A helper function that allows to create message handlers for specific message types.
+    A decorator for message handlers that filters lsp messages based on their method name.
 
     Usage:
+        # For known methods, the message type is checked according to the spec...
         @on("shutdown")
         def handler_function(server, message: RequestS): ...
 
-        @on("customMessage", Notification)
-        def handler_function(server, message: Notification): ...
+        # ...but can be overwritten.
+        @on("shutdown", Message)
+        def handler_function(server, message: Message): ...
+
+        # For unknown methods, the message type can be set arbitrarily.
+        @on("customMessage")            # <= no need to set `Notification` here
+        def handler_function(server, message: Notification): ...  # <= but here
+
+        # However, you can also create custom decorators for type safety.
+        custom_message = on("customMessage", Notification)
+        custom_message: handles[Notification] = on("customMessage")
+
+        @custom_message
+        def handler_function(server, message: Notification): ...  # <= type checked
 
     Available message types:
         Message
@@ -619,7 +629,8 @@ def on(name, type_=None):
                 type_ = t
                 break
         else:
-            type_ = Message
+            type_ = Message  # <= this is a lie; R is unbound ("Never")
+                             #    in accordance with the overload above
     return handles[type_](name)
 
 
