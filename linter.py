@@ -552,15 +552,13 @@ R = TypeVar('R', bound=Message)
 
 class handles(Generic[R]):
     """
-    A decorator that filters lsp messages based on their method name and server name.
+    A decorator that filters lsp messages based on their method name.
 
     Attributes:
         wanted_method (str): The method name that this handler is interested in.
-        server_name (str, optional): The name of the server to which this handler is bound.
-            If not set, the handler will be called for any server.
 
     Examples:
-        @handles("shutdown", "ruff")
+        @handles("shutdown")
         def handler_function(server, message: Message):
             pass
 
@@ -568,17 +566,14 @@ class handles(Generic[R]):
         def handler_function(server, message: Notification):
             pass
     """
-    def __init__(self, wanted_method: str, server_name: str | None = None, /) -> None:
+    def __init__(self, wanted_method: str, /) -> None:
         self.wanted_method = wanted_method
-        self.server_name = server_name
 
     def __call__(self,
         fn: Callable[Concatenate[Server, R,       P], None]
     ) ->    Callable[Concatenate[Server, Message, P], None]:
         @wraps(fn)
-        def wrapped(s: Server, m, *args: P.args, **kwargs: P.kwargs) -> None:
-            if self.server_name and self.server_name != s.name:
-                return
+        def wrapped(s, m, *args: P.args, **kwargs: P.kwargs) -> None:
             if m.get("method") == self.wanted_method:
                 fn(s, m, *args, **kwargs)
 
