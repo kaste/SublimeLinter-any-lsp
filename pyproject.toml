@@ -1,9 +1,39 @@
+[project]
+name = "SublimeLinter-any-lsp"
+version = "0.1.0"
+description = "SublimeLinter plugin for LSP integration"
+authors = [
+    {name = "herr.kaste", email = "herr.kaste@gmail.com"},
+]
+dependencies = [
+    "typing-extensions",
+    "flake8",
+    "mypy",
+]
+
+[tool.rye]
+managed = true
+virtual = true
+
 [tool.ruff.lint]
-extend-select = ["W", "E", "I"]
+extend-select = ["I"]
 ignore = ["W293"]
 
 [tool.ruff.lint.isort]
 force-sort-within-sections = true
+lines-after-imports = 2
+section-order = [
+  "future",
+  "standard-library",
+  "third-party",
+  "first-party",
+  "local-folder",
+  "typing"
+]
+known-first-party = ["SublimeLinter"]
+
+[tool.ruff.lint.isort.sections]
+typing = ["typing", "typing_extensions"]
 
 [tool.ruff.lint.pycodestyle]
 max-line-length = 100
