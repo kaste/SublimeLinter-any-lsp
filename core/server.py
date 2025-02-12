@@ -61,6 +61,15 @@ __all__ = [
 ]
 
 
+def plugin_loaded():
+    ...
+
+
+def plugin_unloaded():
+    for server in running_servers.values():
+        server.kill()
+
+
 P = ParamSpec('P')
 T = TypeVar('T')
 
@@ -962,12 +971,3 @@ def merge_dicts(a: dict, b: dict) -> dict:
 def std_err_printer(logger: logging.Logger, stream: IO[bytes]) -> None:
     for line in stream:
         logger.info(line.decode('utf-8', 'replace').rstrip())
-
-
-def plugin_loaded():
-    ...
-
-
-def plugin_unloaded():
-    for server in running_servers.values():
-        server.kill()
