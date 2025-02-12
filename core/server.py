@@ -149,31 +149,6 @@ MESSAGES_TO_TYPES = {
 }
 
 
-def encode_message(msg: Message) -> bytes:
-    _message = json.dumps(msg)
-    return JSON_RPC_MESSAGE.format(len(_message), _message).encode()
-
-
-def parse_for_message(stream: IO[bytes]) -> Optional[Message]:
-    for line in stream:
-        if line.startswith(b"Content-Length: "):
-            content_length = int(line[16:].rstrip())
-            break
-    else:
-        return None
-
-    # Ignore every other possible header, just go for the next empty line
-    for line in stream:
-        if not line.strip():
-            break
-
-    content = stream.read(content_length)
-    try:
-        return json.loads(content)
-    except json.decoder.JSONDecodeError:
-        return None
-
-
 ServerName: TypeAlias = str
 RootDir: TypeAlias = Optional[str]
 ServerIdentity: TypeAlias = "tuple[ServerName, RootDir]"
@@ -398,6 +373,34 @@ def sanitize_message(msg: Mapping) -> Mapping:
     return sanitized
 
 
+def encode_message(msg: Message) -> bytes:
+    _message = json.dumps(msg)
+    return JSON_RPC_MESSAGE.format(len(_message), _message).encode()
+
+
+def parse_for_message(stream: IO[bytes]) -> Optional[Message]:
+    for line in stream:
+        if line.startswith(b"Content-Length: "):
+            content_length = int(line[16:].rstrip())
+            break
+    else:
+        return None
+
+    # Ignore every other possible header, just go for the next empty line
+    for line in stream:
+        if not line.strip():
+            break
+
+    content = stream.read(content_length)
+    try:
+        return json.loads(content)
+    except json.decoder.JSONDecodeError:
+        return None
+
+
+### server lifetime
+
+
 running_servers: dict[ServerIdentity, Server] = {}
 locks: dict[ServerIdentity, threading.Lock] = defaultdict(lambda: threading.Lock())
 
@@ -414,7 +417,6 @@ def ensure_server(config: ServerConfig) -> Server:
     else:
         handlers = {}
 
-    print("start server", config)
     new_server = start_server(config, handlers)
     running_servers[config.identity()] = new_server
     return new_server
@@ -469,6 +471,137 @@ def start_server(config: ServerConfig, handlers: dict[str, Callback] = {}) -> Se
         server.notify("initialized")
 
     return server
+
+
+servers_attached_per_buffer: dict[int, dict[str, Server]] = defaultdict(dict)
+
+
+def remember_server_for_view(view: sublime.View, server: Server) -> None:
+    servers_attached_per_buffer[view.buffer_id()][server.name] = server
+
+
+def get_server_for_view(view: sublime.View, name: str) -> Server | None:
+    return servers_attached_per_buffer.get(view.buffer_id(), {}).get(name)
+
+
+class DocumentListener(sublime_plugin.EventListener):
+    def on_close(self, view: sublime.View) -> None:
+        if view.clones():
+            return
+
+        did_close(view)
+
+    def on_pre_close_window(self, window: sublime.Window) -> None:
+        for buffer in {view.buffer() for view in window.views()}:
+            view = buffer.primary_view()
+            if view := buffer.primary_view():
+                did_close(view)
+
+    def on_exit(self) -> None:
+        for (cmd, root_dir), server in running_servers.items():
+            server.kill()
+
+
+    def on_load(self, view):
+        ...
+
+
+def did_close(view: sublime.View) -> None:
+    uri = canoncial_uri_for_view(view)
+    for server in servers_attached_per_buffer.pop(view.buffer_id(), {}).values():
+        server.notify("textDocument/didClose", {"uri": uri})
+
+
+def attached_servers() -> set[ServerIdentity]:
+    return {
+        server.config.identity()
+        for d in servers_attached_per_buffer.values()
+        for server in d.values()
+    }
+
+
+WAIT_TIME = 0.5
+ONE_MINUTE = 60
+KEEP_ALIVE_USED_INTERVAL  = 10 * ONE_MINUTE
+KEEP_ALIVE_UNUSED_INTERVAL = 5 * ONE_MINUTE
+
+def cleanup_servers(*, keep_alive=(KEEP_ALIVE_USED_INTERVAL, KEEP_ALIVE_UNUSED_INTERVAL)) -> None:
+    used_servers = attached_servers()
+    current = time.monotonic()
+    keep_alive_used, keep_alive_unused = keep_alive
+
+    for identity, server in running_servers.items():
+        if server.is_dead():
+            continue
+
+        idle_time = current - server.last_interaction
+        max_idle_time = (
+            keep_alive_used
+            if identity in used_servers
+            else keep_alive_unused
+        )
+
+        if idle_time > max_idle_time:
+            server.logger.info(
+                f"{server.name} idle for {idle_time:.1f}s (> {max_idle_time}s). Shutting down."
+            )
+            shutdown_server(server)
+
+
+def shutdown_server(server: Server) -> bool:
+    if server.in_shutdown_phase():
+        if not server.wait(WAIT_TIME):
+            server.kill()
+            return server.wait(WAIT_TIME)
+        return True
+
+    return shutdown_server_(server)
+
+
+def shutdown_server_(server: Server) -> bool:
+    cond = threading.Condition()
+
+    def on_shutdown_response(_):
+        server.notify("exit")
+        if not server.wait(WAIT_TIME):
+            server.kill()
+            if not server.wait(WAIT_TIME):
+                return
+
+        with cond:
+            cond.notify_all()
+
+    req = server.request("shutdown")
+    req.on_response(on_shutdown_response)
+    try:
+        req.wait(WAIT_TIME)
+    except TimeoutError:
+        req.cancel()
+        server.kill()
+        return server.wait(WAIT_TIME)
+
+    with cond:
+        ok = cond.wait(WAIT_TIME * 2)
+    server.logger.info("shutdown in time" if ok else "shutdown too slow")
+    return ok
+
+
+
+def join_popen(proc: subprocess.Popen, timeout: float) -> bool:
+    try:
+        proc.wait(timeout)
+    except TimeoutError:
+        return False
+    else:
+        return True
+
+
+def join_thread(thread: threading.Thread, timeout: float) -> bool:
+    thread.join(timeout)
+    return not thread.is_alive()
+
+
+### Linter
 
 
 class AnyLSP(Linter):
@@ -734,132 +867,8 @@ def read_out_and_broadcast_errors(
     ))
 
 
-servers_attached_per_buffer: dict[int, dict[str, Server]] = defaultdict(dict)
 
-
-def remember_server_for_view(view: sublime.View, server: Server) -> None:
-    servers_attached_per_buffer[view.buffer_id()][server.name] = server
-
-
-def get_server_for_view(view: sublime.View, name: str) -> Server | None:
-    return servers_attached_per_buffer.get(view.buffer_id(), {}).get(name)
-
-
-class DocumentListener(sublime_plugin.EventListener):
-    def on_close(self, view: sublime.View) -> None:
-        if view.clones():
-            return
-
-        did_close(view)
-
-    def on_pre_close_window(self, window: sublime.Window) -> None:
-        for buffer in {view.buffer() for view in window.views()}:
-            view = buffer.primary_view()
-            if view := buffer.primary_view():
-                did_close(view)
-
-    def on_exit(self) -> None:
-        for (cmd, root_dir), server in running_servers.items():
-            server.kill()
-
-
-    def on_load(self, view):
-        ...
-
-
-def did_close(view: sublime.View) -> None:
-    uri = canoncial_uri_for_view(view)
-    for server in servers_attached_per_buffer.pop(view.buffer_id(), {}).values():
-        server.notify("textDocument/didClose", {"uri": uri})
-
-
-def attached_servers() -> set[ServerIdentity]:
-    return {
-        server.config.identity()
-        for d in servers_attached_per_buffer.values()
-        for server in d.values()
-    }
-
-
-WAIT_TIME = 0.5
-ONE_MINUTE = 60
-KEEP_ALIVE_USED_INTERVAL  = 10 * ONE_MINUTE
-KEEP_ALIVE_UNUSED_INTERVAL = 5 * ONE_MINUTE
-
-def cleanup_servers(*, keep_alive=(KEEP_ALIVE_USED_INTERVAL, KEEP_ALIVE_UNUSED_INTERVAL)) -> None:
-    used_servers = attached_servers()
-    current = time.monotonic()
-    keep_alive_used, keep_alive_unused = keep_alive
-
-    for identity, server in running_servers.items():
-        if server.is_dead():
-            continue
-
-        idle_time = current - server.last_interaction
-        max_idle_time = (
-            keep_alive_used
-            if identity in used_servers
-            else keep_alive_unused
-        )
-
-        if idle_time > max_idle_time:
-            server.logger.info(
-                f"{server.name} idle for {idle_time:.1f}s (> {max_idle_time}s). Shutting down."
-            )
-            shutdown_server(server)
-
-
-def shutdown_server(server: Server) -> bool:
-    if server.in_shutdown_phase():
-        if not server.wait(WAIT_TIME):
-            server.kill()
-            return server.wait(WAIT_TIME)
-        return True
-
-    return shutdown_server_(server)
-
-
-def shutdown_server_(server: Server) -> bool:
-    cond = threading.Condition()
-
-    def on_shutdown_response(_):
-        server.notify("exit")
-        if not server.wait(WAIT_TIME):
-            server.kill()
-            if not server.wait(WAIT_TIME):
-                return
-
-        with cond:
-            cond.notify_all()
-
-    req = server.request("shutdown")
-    req.on_response(on_shutdown_response)
-    try:
-        req.wait(WAIT_TIME)
-    except TimeoutError:
-        req.cancel()
-        server.kill()
-        return server.wait(WAIT_TIME)
-
-    with cond:
-        ok = cond.wait(WAIT_TIME * 2)
-    server.logger.info("shutdown in time" if ok else "shutdown too slow")
-    return ok
-
-
-
-def join_popen(proc: subprocess.Popen, timeout: float) -> bool:
-    try:
-        proc.wait(timeout)
-    except TimeoutError:
-        return False
-    else:
-        return True
-
-
-def join_thread(thread: threading.Thread, timeout: float) -> bool:
-    thread.join(timeout)
-    return not thread.is_alive()
+### Helper
 
 
 class OkFuture(Future, Generic[T]):
