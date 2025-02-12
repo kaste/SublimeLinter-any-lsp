@@ -567,6 +567,7 @@ def cleanup_servers(*, keep_alive=(KEEP_ALIVE_USED_INTERVAL, KEEP_ALIVE_UNUSED_I
     current = time.monotonic()
     keep_alive_used, keep_alive_unused = keep_alive
 
+    servers_to_shutdown = []
     for server in running_servers():
         idle_time = current - server.last_interaction
         max_idle_time = (
@@ -576,11 +577,20 @@ def cleanup_servers(*, keep_alive=(KEEP_ALIVE_USED_INTERVAL, KEEP_ALIVE_UNUSED_I
         )
 
         if idle_time > max_idle_time:
+            servers_to_shutdown.append((server, idle_time, max_idle_time))
+
+    def fx():
+        for server, idle_time, max_idle_time in servers_to_shutdown:
             server.logger.info(
+                f"{server.name} idle for {idle_time:.1f}s (> {max_idle_time}s). Shutting down."
+            )
+            print(
                 f"{server.name} idle for {idle_time:.1f}s (> {max_idle_time}s). Shutting down."
             )
             shutdown_server(server)
 
+    if servers_to_shutdown:
+        run_on_new_thread(fx)
 
 def shutdown_server(server: Server) -> bool:
     if server.in_shutdown_phase():
