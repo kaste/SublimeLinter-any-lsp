@@ -228,9 +228,17 @@ class Server:
     def wait(self, timeout: float) -> bool:
         return join_thread(self._reader_thread, timeout)
 
-    def kill(self):
+    @overload
+    def kill(self, timeout: float) -> bool: ...
+    @overload
+    def kill(self) -> None: ...
+    def kill(self, timeout: float | None = None) -> bool | None:
         self.logger.info(f"SIGKILL {self.name}")
         self.killer()
+        if timeout is None:
+            return None
+        else:
+            return self.wait(timeout)
 
     def request(self, method: str, params: dict = {}) -> OkFuture[Message]:
         fut: Future[Message]
@@ -592,43 +600,26 @@ def cleanup_servers(*, keep_alive=(KEEP_ALIVE_USED_INTERVAL, KEEP_ALIVE_UNUSED_I
     if servers_to_shutdown:
         run_on_new_thread(fx)
 
-def shutdown_server(server: Server) -> bool:
+
+def shutdown_server(server: Server, timeout: float = WAIT_TIME) -> bool:
     if server.in_shutdown_phase():
-        if not server.wait(WAIT_TIME):
-            server.kill()
-            return server.wait(WAIT_TIME)
-        return True
+        return server.wait(timeout) or server.kill(timeout)
 
-    return shutdown_server_(server)
-
-
-def shutdown_server_(server: Server) -> bool:
-    cond = threading.Condition()
-
-    def on_shutdown_response(_):
-        server.notify("exit")
-        if not server.wait(WAIT_TIME):
-            server.kill()
-            if not server.wait(WAIT_TIME):
-                return
-
-        with cond:
-            cond.notify_all()
-
-    req = server.request("shutdown")
-    req.on_response(on_shutdown_response)
-    try:
-        req.wait(WAIT_TIME)
-    except TimeoutError:
-        req.cancel()
-        server.kill()
-        return server.wait(WAIT_TIME)
-
-    with cond:
-        ok = cond.wait(WAIT_TIME * 2)
+    ok = shutdown_server_(server, timeout)
     server.logger.info("shutdown in time" if ok else "shutdown too slow")
     return ok
 
+
+def shutdown_server_(server: Server, timeout: float = WAIT_TIME) -> bool:
+    req = server.request("shutdown")
+    try:
+        req.wait(timeout)
+    except TimeoutError:
+        req.cancel()
+        return server.kill(timeout)
+    else:
+        server.notify("exit")
+        return server.wait(timeout) or server.kill(timeout)
 
 
 def join_popen(proc: subprocess.Popen, timeout: float) -> bool:
