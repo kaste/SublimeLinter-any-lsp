@@ -10,6 +10,7 @@ import json
 import logging
 import os
 from pathlib import Path
+import random
 import subprocess
 import threading
 import time
@@ -58,6 +59,7 @@ __all__ = [
     "plugin_loaded",
     "plugin_unloaded",
     "DocumentListener",
+    "ActivityMonitor",
 ]
 
 
@@ -524,6 +526,28 @@ WAIT_TIME = 0.5
 ONE_MINUTE = 60
 KEEP_ALIVE_USED_INTERVAL  = 10 * ONE_MINUTE
 KEEP_ALIVE_UNUSED_INTERVAL = 5 * ONE_MINUTE
+USER_IS_IDLE_INTERVAL        = 5 * ONE_MINUTE
+ACTIVITY_INTERVAL_AFTER_IDLE = 1 * ONE_MINUTE
+last_activity: float = time.monotonic()
+
+class ActivityMonitor(sublime_plugin.EventListener):
+    def on_modified_async(self, view: sublime.View) -> None:
+        global last_activity
+        if random.random() > 0.01:
+            return
+
+        now, then = time.monotonic(), last_activity
+        delta = now - then
+        if delta > USER_IS_IDLE_INTERVAL:
+            # User was idle and starts again; don't shutdown
+            # all servers but wait for ACTIVITY_INTERVAL_AFTER_IDLE
+            last_activity = now + ACTIVITY_INTERVAL_AFTER_IDLE
+            # Because we shift into the future, delta is < 0
+            # for that interval.
+        elif delta > 0:
+            last_activity = now
+            cleanup_servers()
+
 
 def cleanup_servers(*, keep_alive=(KEEP_ALIVE_USED_INTERVAL, KEEP_ALIVE_UNUSED_INTERVAL)) -> None:
     used_servers = attached_servers()
