@@ -570,7 +570,10 @@ class ActivityMonitor(sublime_plugin.EventListener):
             cleanup_servers()
 
 
-def cleanup_servers(*, keep_alive=(KEEP_ALIVE_USED_INTERVAL, KEEP_ALIVE_UNUSED_INTERVAL)) -> None:
+def cleanup_servers(
+    *,
+    keep_alive: tuple[float, float] = (KEEP_ALIVE_USED_INTERVAL, KEEP_ALIVE_UNUSED_INTERVAL)
+) -> None:
     used_servers = attached_servers()
     current = time.monotonic()
     keep_alive_used, keep_alive_unused = keep_alive
