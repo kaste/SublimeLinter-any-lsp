@@ -36,7 +36,9 @@ from .utils import Counter, inflate, read_path, run_on_new_thread, try_kill_proc
 from typing import (
     IO,
     Callable,
+    Dict,
     Generic,
+    Iterator,
     Literal,
     Mapping,
     Optional,
@@ -403,7 +405,18 @@ def parse_for_message(stream: IO[bytes]) -> Optional[Message]:
 ### server lifetime
 
 
-running_servers: dict[ServerIdentity, Server] = {}
+class RunningServers(Dict[ServerIdentity, Server]):
+    def __call__(self) -> Iterator[Server]:
+        self.gc()
+        return iter(self.values())
+
+    def gc(self) -> None:
+        for identity, server in list(self.items()):
+            if server.is_dead():
+                del self[identity]
+
+
+running_servers: RunningServers = RunningServers()
 locks: dict[ServerIdentity, threading.Lock] = defaultdict(lambda: threading.Lock())
 
 
@@ -554,10 +567,7 @@ def cleanup_servers(*, keep_alive=(KEEP_ALIVE_USED_INTERVAL, KEEP_ALIVE_UNUSED_I
     current = time.monotonic()
     keep_alive_used, keep_alive_unused = keep_alive
 
-    for identity, server in running_servers.items():
-        if server.is_dead():
-            continue
-
+    for server in running_servers():
         idle_time = current - server.last_interaction
         max_idle_time = (
             keep_alive_used
