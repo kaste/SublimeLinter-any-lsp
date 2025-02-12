@@ -512,9 +512,9 @@ def did_close(view: sublime.View) -> None:
         server.notify("textDocument/didClose", {"uri": uri})
 
 
-def attached_servers() -> set[ServerIdentity]:
+def attached_servers() -> set[Server]:
     return {
-        server.config.identity()
+        server
         for d in servers_attached_per_buffer.values()
         for server in d.values()
     }
@@ -537,7 +537,7 @@ def cleanup_servers(*, keep_alive=(KEEP_ALIVE_USED_INTERVAL, KEEP_ALIVE_UNUSED_I
         idle_time = current - server.last_interaction
         max_idle_time = (
             keep_alive_used
-            if identity in used_servers
+            if server in used_servers
             else keep_alive_unused
         )
 
