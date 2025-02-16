@@ -104,15 +104,15 @@ MINIMAL_CAPABILITIES = inflate({
     "window.workDoneProgress": True,
 })
 max_capabilities_per_service: dict[str, dict] = {}
-_counter = Counter()
-
-Callback = Callable[["Server", Message], None]
 
 ServerName: TypeAlias = str
 RootDir: TypeAlias = Optional[str]
 ServerIdentity: TypeAlias = "tuple[ServerName, RootDir]"
 ServerStates: TypeAlias = Literal[
     "INIT", "INITIALIZE_REQUESTED", "READY", "SHUTDOWN_REQUESTED", "EXIT_REQUESTED", "DEAD"]
+Callback = Callable[["Server", Message], None]
+_counter = Counter()
+next_id = _counter.next
 
 
 @dataclass
@@ -824,11 +824,6 @@ def view_for_file_name(file_name: str) -> sublime.View | None:
         if view := window.find_open_file(file_name):
             return view
     return None
-
-
-def next_id() -> int:
-    _counter.inc()
-    return _counter.count()
 
 
 def to_uri(path: str) -> str:

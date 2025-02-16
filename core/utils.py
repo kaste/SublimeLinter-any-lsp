@@ -67,6 +67,10 @@ class Counter:
     def count(self) -> int:
         return next(self._incs) - next(self._decs)
 
+    def next(self) -> int:
+        self.inc()
+        return self.count()
+
 
 def inflate(d: dict) -> dict:
     """
