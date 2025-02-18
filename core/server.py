@@ -662,6 +662,8 @@ class AnyLSP(Linter):
             }))
 
         if server.has_capability("diagnosticProvider"):
+            cc = self.view.change_count()
+            uri = canoncial_uri_for_view(self.view)
             req = server.request("textDocument/diagnostic", inflate({
                 "textDocument.uri": canoncial_uri_for_view(self.view),
             }))
@@ -670,12 +672,17 @@ class AnyLSP(Linter):
             def on_diagnostics(msg):
                 # print("on_diagnostics", self.name)
                 try:
-                    items = msg["result"]["items"]
+                    result = msg["result"]
                 except KeyError:
-                    pass
-                else:
-                    read_out_and_broadcast_errors(
-                        self.name, self.view, items, self.default_type)
+                    self.logger.info(
+                        f"no result for `textDocument/diagnostic`. "
+                        f"error: {msg['error']['message']}"
+                    )
+                    return
+
+                items = result.get("items")
+                if items is not None:
+                    parse_diagnostics(server, uri, cc, items, self.default_type)
 
         raise TransientError("lsp's answer on their own will.")
 
@@ -711,22 +718,31 @@ def diagnostics_handler(
     # print("diagnostics_handler", server.name)
     # print("diagnostics_handler--")
     # print("msg", msg)
-    linter_name = server.name
     uri = msg["params"]["uri"]
+    items = msg["params"]["diagnostics"]
+    version = msg["params"]["version"]
+    parse_diagnostics(server, uri, version, items, default_error_type)
+
+
+def parse_diagnostics(
+    server: Server,
+    uri: str,
+    version: int | None,
+    items: dict,
+    default_error_type: str
+) -> None:
+    linter_name = server.name
     file_name = canonical_name_from_uri(uri)
     view = view_for_file_name(file_name)
     if not view:
         server.logger.info(f"skip: no view for {file_name}")
         return
-    # print("canoncial_uri_for_view", file_name, view.file_name())
 
-    version = msg["params"]["version"]
-    if view.change_count() != version:
+    if version and view.change_count() != version:
         server.logger.info(f"skip: view has changed. {view.change_count()} -> {version}")
         return
 
-    read_out_and_broadcast_errors(
-        linter_name, view, msg["params"]["diagnostics"], default_error_type)
+    read_out_and_broadcast_errors(linter_name, view, items, default_error_type)
 
 
 def read_out_and_broadcast_errors(
