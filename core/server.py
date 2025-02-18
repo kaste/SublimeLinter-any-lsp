@@ -663,7 +663,6 @@ class AnyLSP(Linter):
 
         if server.has_capability("diagnosticProvider"):
             cc = self.view.change_count()
-            uri = canoncial_uri_for_view(self.view)
             req = server.request("textDocument/diagnostic", inflate({
                 "textDocument.uri": canoncial_uri_for_view(self.view),
             }))
@@ -682,14 +681,14 @@ class AnyLSP(Linter):
 
                 items = result.get("items")
                 if items is not None:
-                    parse_diagnostics(server, uri, cc, items, self.default_type)
+                    parse_diagnostics(server, self.view, cc, items, self.default_type)
 
                 related_documents = result.get("relatedDocuments")
                 if related_documents is not None:
-                    for uri_, report in related_documents.items():
+                    for uri, report in related_documents.items():
                         items = report.get("items")
                         if items is not None:
-                            parse_diagnostics(server, uri_, None, items, self.default_type)
+                            parse_diagnostics(server, uri, None, items, self.default_type)
 
         raise TransientError("lsp's answer on their own will.")
 
@@ -733,17 +732,20 @@ def diagnostics_handler(
 
 def parse_diagnostics(
     server: Server,
-    uri: str,
+    target: sublime.View | str,
     version: int | None,
     items: dict,
     default_error_type: str
 ) -> None:
     linter_name = server.name
-    file_name = canonical_name_from_uri(uri)
-    view = view_for_file_name(file_name)
-    if not view:
-        server.logger.info(f"skip: no view for {file_name}")
-        return
+    if isinstance(target, str):
+        file_name = canonical_name_from_uri(target)
+        view = view_for_file_name(file_name)
+        if not view:
+            server.logger.info(f"skip: no view for {file_name}")
+            return
+    else:
+        view = target
 
     if version and view.change_count() != version:
         server.logger.info(f"skip: view has changed. {view.change_count()} -> {version}")
