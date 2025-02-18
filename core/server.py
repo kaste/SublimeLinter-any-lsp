@@ -641,9 +641,7 @@ class AnyLSP(Linter):
             settings=settings
         )
         server, attached = ensure_server_for_view(config, self.view)
-        reason = "on_load" if attached else "on_modified"
-
-        if reason == "on_load":
+        if attached:
             server.add_listener(
                 partial(diagnostics_handler, default_error_type=self.default_type)
             )
@@ -654,7 +652,7 @@ class AnyLSP(Linter):
                 "textDocument.text": code,
             }))
 
-        elif reason == "on_modified":
+        else:
             server.notify("textDocument/didChange", inflate({
                 "textDocument.uri": canoncial_uri_for_view(self.view),
                 "textDocument.version": self.view.change_count(),
