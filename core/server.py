@@ -661,6 +661,7 @@ class AnyLSP(Linter):
 
         if server.has_capability("diagnosticProvider"):
             cc = self.view.change_count()
+            reason = self.context.get("reason")
             req = server.request("textDocument/diagnostic", inflate({
                 "textDocument.uri": canoncial_uri_for_view(self.view),
             }))
@@ -679,14 +680,14 @@ class AnyLSP(Linter):
 
                 items = result.get("items")
                 if items is not None:
-                    parse_diagnostics(server, self.view, cc, items, self.default_type)
+                    parse_diagnostics(server, self.view, cc, items, self.default_type, reason)
 
                 related_documents = result.get("relatedDocuments")
                 if related_documents is not None:
                     for uri, report in related_documents.items():
                         items = report.get("items")
                         if items is not None:
-                            parse_diagnostics(server, uri, None, items, self.default_type)
+                            parse_diagnostics(server, uri, None, items, self.default_type, reason)
 
         raise TransientError("lsp's answer on their own will.")
 
@@ -725,7 +726,7 @@ def diagnostics_handler(
     uri = msg["params"]["uri"]
     items = msg["params"]["diagnostics"]
     version = msg["params"]["version"]
-    parse_diagnostics(server, uri, version, items, default_error_type)
+    parse_diagnostics(server, uri, version, items, default_error_type, "on_modified")
 
 
 def parse_diagnostics(
@@ -733,7 +734,8 @@ def parse_diagnostics(
     target: sublime.View | str,
     version: int | None,
     items: dict,
-    default_error_type: str
+    default_error_type: str,
+    reason: str | None
 ) -> None:
     linter_name = server.name
     if isinstance(target, str):
@@ -749,14 +751,15 @@ def parse_diagnostics(
         server.logger.info(f"skip: view has changed. {view.change_count()} -> {version}")
         return
 
-    read_out_and_broadcast_errors(linter_name, view, items, default_error_type)
+    read_out_and_broadcast_errors(linter_name, view, items, default_error_type, reason)
 
 
 def read_out_and_broadcast_errors(
     linter_name: str,
     view: sublime.View,
     items: dict,
-    default_error_type: str
+    default_error_type: str,
+    reason: str | None
 ):
     file_name = util.canonical_filename(view)
     errors: list[persist.LintError] = []
@@ -798,7 +801,7 @@ def read_out_and_broadcast_errors(
     # print("out:", errors)
     # fan-in on Sublime's worker thread
     sublime.set_timeout_async(partial(
-        sublime_linter.update_file_errors, file_name, linter_name, errors, reason=None
+        sublime_linter.update_file_errors, file_name, linter_name, errors, reason
     ))
 
 
