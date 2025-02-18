@@ -381,7 +381,31 @@ class RunningServers(Dict[ServerIdentity, Server]):
 
 running_servers: RunningServers = RunningServers()
 locks: dict[ServerIdentity, threading.Lock] = defaultdict(lambda: threading.Lock())
+servers_attached_per_buffer: dict[int, dict[str, Server]] = defaultdict(dict)
 
+
+def remember_server_for_view(view: sublime.View, server: Server) -> None:
+    servers_attached_per_buffer[view.buffer_id()][server.name] = server
+
+
+def get_server_for_view(view: sublime.View, name: str) -> Server | None:
+    return servers_attached_per_buffer.get(view.buffer_id(), {}).get(name)
+
+
+def attach_view_to_server(server: Server, view: sublime.View) -> bool:
+    bid = view.buffer_id()
+    name = server.name
+    if server != servers_attached_per_buffer.get(bid, {}).get(name):
+        servers_attached_per_buffer[bid][name] = server
+        return True
+    return False
+
+
+def ensure_server_for_view(config: ServerConfig, view: sublime.View) -> tuple[Server, bool]:
+    with locks[config.identity()]:
+        server = ensure_server(config)
+        attached = attach_view_to_server(server, view)
+        return server, attached
 
 
 def ensure_server(config: ServerConfig) -> Server:
@@ -449,17 +473,6 @@ def start_server(config: ServerConfig, handlers: dict[str, Callback] = {}) -> Se
         server.notify("initialized")
 
     return server
-
-
-servers_attached_per_buffer: dict[int, dict[str, Server]] = defaultdict(dict)
-
-
-def remember_server_for_view(view: sublime.View, server: Server) -> None:
-    servers_attached_per_buffer[view.buffer_id()][server.name] = server
-
-
-def get_server_for_view(view: sublime.View, name: str) -> Server | None:
-    return servers_attached_per_buffer.get(view.buffer_id(), {}).get(name)
 
 
 class DocumentListener(sublime_plugin.EventListener):
@@ -627,20 +640,13 @@ class AnyLSP(Linter):
             initialization_options=initialization_options,
             settings=settings
         )
-        with locks[config.identity()]:
-            server = ensure_server(config)
-            reason = (
-                "on_modified"
-                if get_server_for_view(self.view, self.name) == server
-                else "on_load"
-            )
-            if reason == "on_load":
-                remember_server_for_view(self.view, server)
-                server.add_listener(
-                    partial(diagnostics_handler, default_error_type=self.default_type)
-                )
+        server, attached = ensure_server_for_view(config, self.view)
+        reason = "on_load" if attached else "on_modified"
 
         if reason == "on_load":
+            server.add_listener(
+                partial(diagnostics_handler, default_error_type=self.default_type)
+            )
             server.notify("textDocument/didOpen", inflate({
                 "textDocument.uri": canoncial_uri_for_view(self.view),
                 "textDocument.languageId": language_id_for_view(self.view),
