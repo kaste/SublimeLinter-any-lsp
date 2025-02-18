@@ -779,8 +779,8 @@ def read_out_and_broadcast_errors(
             "msg": diagnostic["message"],
             "code": diagnostic.get("code", ""),
             "error_type": SEVERITY_TO_ERROR_TYPE.get(
-                diagnostic.get("severity"),
-                default_error_type),
+                diagnostic.get("severity"), default_error_type
+            ),
             "line": diagnostic["range"]["start"]["line"],
             "start": diagnostic["range"]["start"]["character"],
             "region": region,
@@ -788,6 +788,7 @@ def read_out_and_broadcast_errors(
         }
         if "data" in diagnostic:
             error["data"] = diagnostic["data"]  # type: ignore[typeddict-unknown-key]
+
         error.update({
             "uid": make_error_uid(error),
             "priority": style.get_value("priority", error, 0)
