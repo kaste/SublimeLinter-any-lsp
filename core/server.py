@@ -684,6 +684,13 @@ class AnyLSP(Linter):
                 if items is not None:
                     parse_diagnostics(server, uri, cc, items, self.default_type)
 
+                related_documents = result.get("relatedDocuments")
+                if related_documents is not None:
+                    for uri_, report in related_documents.items():
+                        items = report.get("items")
+                        if items is not None:
+                            parse_diagnostics(server, uri_, None, items, self.default_type)
+
         raise TransientError("lsp's answer on their own will.")
 
 
