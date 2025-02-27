@@ -696,7 +696,7 @@ class AnyLSP(Linter):
 def on_log_message(server: Server, msg: Notification) -> None:
     server.logger.log(
         LOG_SEVERITY_MAP.get(msg["params"]["type"], logging.WARNING),
-        msg["params"]["message"]
+        server.name + ": " + msg["params"]["message"]
     )
 
 
