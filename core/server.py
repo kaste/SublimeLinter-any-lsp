@@ -219,7 +219,7 @@ class Server:
     def send(self, message: Message) -> None:
         # print("send message:", message)
         if self.state == "DEAD":
-            self.logger.warn("Server is already dead.")
+            self.logger.warn(f"Server {self.name} is already dead. {message}")
             return
 
         if self.state == "EXIT_REQUESTED":
