@@ -500,7 +500,8 @@ class DocumentListener(sublime_plugin.EventListener):
 def did_close(view: sublime.View) -> None:
     uri = canoncial_uri_for_view(view)
     for server in servers_attached_per_buffer.pop(view.buffer_id(), {}).values():
-        server.notify("textDocument/didClose", inflate({"textDocument.uri": uri}))
+        if not server.is_dead():
+            server.notify("textDocument/didClose", inflate({"textDocument.uri": uri}))
 
 
 def attached_servers() -> set[Server]:
