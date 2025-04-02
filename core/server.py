@@ -484,7 +484,6 @@ class DocumentListener(sublime_plugin.EventListener):
 
     def on_pre_close_window(self, window: sublime.Window) -> None:
         for buffer in {view.buffer() for view in window.views()}:
-            view = buffer.primary_view()
             if view := buffer.primary_view():
                 did_close(view)
 
