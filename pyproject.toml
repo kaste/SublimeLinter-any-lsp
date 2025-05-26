@@ -5,15 +5,6 @@ description = "SublimeLinter plugin for LSP integration"
 authors = [
     {name = "herr.kaste", email = "herr.kaste@gmail.com"},
 ]
-dependencies = [
-    "typing-extensions",
-    "flake8",
-    "mypy",
-]
-
-[tool.rye]
-managed = true
-virtual = true
 
 [tool.ruff.lint]
 extend-select = ["I"]
