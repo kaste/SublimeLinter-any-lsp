@@ -320,8 +320,9 @@ class Server:
                     traceback.print_exc()
 
         self.state = "DEAD"
-        self.logger.info(f"`{self.name}`> is now dead.")
-        print(f"`{self.name}`> is now dead.")
+        dir = os.path.basename(self.config.root_dir or ".")
+        self.logger.info(f"`{self.name}`> for '{dir}' is now dead.")
+        print(f"`{self.name}`> for '{dir}' is now dead.")
 
 
 def sanitize_message(msg: Mapping) -> Mapping:
