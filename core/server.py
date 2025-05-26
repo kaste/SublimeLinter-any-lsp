@@ -15,6 +15,7 @@ import subprocess
 import threading
 import time
 import traceback
+from urllib.parse import unquote_to_bytes
 
 import sublime
 import sublime_plugin
@@ -865,15 +866,14 @@ def to_uri(path: str) -> str:
 
 def from_uri(uri: str) -> str:  # roughly taken from Python 3.13
     """Return a new path from the given 'file' URI."""
-    from urllib.parse import unquote_to_bytes
-    if not uri.startswith('file:'):
+    if not uri.lower().startswith('file:'):
         raise ValueError(f"URI does not start with 'file:': {uri!r}")
     path = os.fsdecode(unquote_to_bytes(uri))
     path = path[5:]
     if path[:3] == '///':
         # Remove empty authority
         path = path[2:]
-    elif path[:12] == '//localhost/':
+    elif path[:12].lower() == '//localhost/':
         # Remove 'localhost' authority
         path = path[11:]
     if path[:3] == '///' or (path[:1] == '/' and path[2:3] in ':|'):
@@ -883,10 +883,9 @@ def from_uri(uri: str) -> str:  # roughly taken from Python 3.13
     if path[1:2] == '|':
         # Replace bar with colon in DOS drive
         path = path[:1] + ':' + path[2:]
-    path_ = Path(path)
-    if not path_.is_absolute():
-        raise ValueError(f"URI is not absolute: {uri!r}.  Parsed so far: {path_!r}")
-    return str(path_)
+    if not os.path.isabs(path):
+        raise ValueError(f"URI is not absolute: {uri!r}. Parsed so far: {path!r}")
+    return path
 
 
 def merge_dicts(a: dict, b: dict) -> dict:
