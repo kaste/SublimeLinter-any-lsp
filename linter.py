@@ -16,8 +16,7 @@ from SublimeLinter.lint.quick_fix import (
     quick_actions_for,
 )
 
-from .core.server import AnyLSP
-from .core.utils import inflate, read_path
+from .core import AnyLSP, inflate, read_path
 
 from typing import Iterator
 
