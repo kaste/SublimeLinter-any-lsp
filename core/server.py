@@ -803,7 +803,7 @@ def read_out_and_broadcast_errors(
     # print("out:", errors)
     # fan-in on Sublime's worker thread
     sublime.set_timeout_async(partial(
-        sublime_linter.update_file_errors, file_name, linter_name, errors, reason
+        persist.update_file_errors, file_name, linter_name, errors, reason
     ))
 
 
