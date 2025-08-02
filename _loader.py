@@ -2,7 +2,7 @@ import sys
 
 
 # kiss-reloader:
-prefix = __package__ + "."  # don't clear the base package
+prefix = __spec__.parent + "."  # don't clear the base package
 for module_name in [
     module_name
     for module_name in sys.modules
